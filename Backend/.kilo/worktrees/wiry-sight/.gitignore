@@ -1,0 +1,3 @@
+.automate
+node_modules/
+.env
