@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { IconEye, IconEyeOff } from './icons';
-import { getStoredUsers, saveUsers } from './utils';
+import { authAPI } from './api';
 
 export default function Auth({ onLogin }) {
   const [isLogin, setIsLogin] = useState(true);
@@ -8,6 +8,8 @@ export default function Auth({ onLogin }) {
   const [name, setName] = useState('');
   const [id, setId] = useState('');
   const [department, setDepartment] = useState('');
+  const [section, setSection] = useState('');
+  const [facultyCode, setFacultyCode] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -24,7 +26,6 @@ export default function Auth({ onLogin }) {
     if (!password) { setError('Password is required'); return false; }
     if (password.length < 4) { setError('Password must be at least 4 characters'); return false; }
     if (password !== confirmPassword) { setError('Passwords do not match'); return false; }
-    if (getStoredUsers().find(u => u.id === id.trim())) { setError('An account with this ID already exists'); return false; }
     setError('');
     return true;
   };
@@ -45,18 +46,10 @@ export default function Auth({ onLogin }) {
       setIsLoading(true);
 
       try {
-        const response = await fetch('http://localhost:5000/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: id.trim(), password }),
-        });
-
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || 'Login failed');
-
+        const data = await authAPI.login({ id: id.trim(), password });
         onLogin(data.user);
       } catch (err) {
-        setError(err.message);
+        setError(err.message || 'Login failed');
       } finally {
         setIsLoading(false);
       }
@@ -65,24 +58,18 @@ export default function Auth({ onLogin }) {
       setIsLoading(true);
 
       try {
-        const response = await fetch('http://localhost:5000/api/auth/signup', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: id.trim(),
-            name: name.trim(),
-            designation: designation.charAt(0).toUpperCase() + designation.slice(1),
-            department: department.trim(),
-            password,
-          }),
+        const data = await authAPI.signup({
+          id: id.trim(),
+          name: name.trim(),
+          designation: designation.charAt(0).toUpperCase() + designation.slice(1),
+          department: department.trim(),
+          section: section.trim().toUpperCase(),
+          facultyCode: facultyCode.trim().toUpperCase(),
+          password,
         });
-
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || 'Signup failed');
-
         onLogin(data.user);
       } catch (err) {
-        setError(err.message);
+        setError(err.message || 'Signup failed');
       } finally {
         setIsLoading(false);
       }
@@ -165,6 +152,34 @@ export default function Auth({ onLogin }) {
                   disabled={isLoading}
                 />
               </div>
+
+              {designation === 'student' && (
+                <div className="form-group">
+                  <label htmlFor="section">Class Section (e.g. 5B, 6A)</label>
+                  <input
+                    id="section"
+                    type="text"
+                    value={section}
+                    onChange={(e) => setSection(e.target.value.toUpperCase())}
+                    placeholder="e.g. 5B or 6A"
+                    disabled={isLoading}
+                  />
+                </div>
+              )}
+
+              {designation === 'teacher' && (
+                <div className="form-group">
+                  <label htmlFor="facultyCode">Faculty Code / Initials</label>
+                  <input
+                    id="facultyCode"
+                    type="text"
+                    value={facultyCode}
+                    onChange={(e) => setFacultyCode(e.target.value.toUpperCase())}
+                    placeholder="e.g. SDS or ABM"
+                    disabled={isLoading}
+                  />
+                </div>
+              )}
             </>
           )}
 

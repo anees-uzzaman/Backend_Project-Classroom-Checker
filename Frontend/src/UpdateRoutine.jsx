@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import Toast from './Toast';
+import { routineAPI } from './api';
 
 export default function UpdateRoutine({ user, routine, setRoutine, roomDetails, setRoomDetails }) {
   const [formData, setFormData] = useState({
@@ -30,7 +31,7 @@ export default function UpdateRoutine({ user, routine, setRoutine, roomDetails, 
     return Object.keys(errs).length === 0;
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!validate()) return;
 
@@ -42,6 +43,20 @@ export default function UpdateRoutine({ user, routine, setRoutine, roomDetails, 
       faculty: formData.faculty.trim(),
       room: formData.room.trim()
     };
+
+    try {
+      await routineAPI.addRoutineEntry({
+        ...newEntry,
+        capacity: formData.capacity,
+        hasAC: formData.hasAC,
+        hasProjector: formData.hasProjector,
+        isLab: formData.isLab
+      }).catch(err => {
+        console.warn('Backend routine offline, proceeding with local update', err);
+      });
+    } catch (err) {
+      console.warn(err);
+    }
 
     setRoutine([...routine, newEntry]);
 
@@ -66,7 +81,7 @@ export default function UpdateRoutine({ user, routine, setRoutine, roomDetails, 
 
   const days = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 
-  if (user && user.designation !== 'Teacher') {
+  if (user && user.designation !== 'Teacher' && user.designation !== 'Admin') {
     return (
       <div className="card-panel">
         <div style={{ marginBottom: '1.75rem' }}>

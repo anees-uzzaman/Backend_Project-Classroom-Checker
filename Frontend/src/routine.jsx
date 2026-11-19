@@ -2446,6 +2446,198 @@ export const routine = [
     "course": "MIS 3301",
     "faculty": "ARD",
     "room": "1505 (ML)"
+  },
+  {
+    "day": "Sunday",
+    "section": "5B",
+    "time": "10.00 AM - 11.20 AM",
+    "course": "CSE 3101",
+    "faculty": "TD",
+    "room": "1504"
+  },
+  {
+    "day": "Sunday",
+    "section": "5B",
+    "time": "11.30 AM - 12.50 PM",
+    "course": "CSE 3107",
+    "faculty": "FHM",
+    "room": "1504"
+  },
+  {
+    "day": "Sunday",
+    "section": "5B",
+    "time": "2.30 PM - 3.50 PM",
+    "course": "CSE 3103",
+    "faculty": "MOH",
+    "room": "1504"
+  },
+  {
+    "day": "Sunday",
+    "section": "5B",
+    "time": "4.00 PM - 5.20 PM",
+    "course": "CSE 3105",
+    "faculty": "TD",
+    "room": "1504"
+  },
+  {
+    "day": "Monday",
+    "section": "5B",
+    "time": "11.30 AM - 12.50 PM",
+    "course": "CSE 3100",
+    "faculty": "AIN",
+    "room": "1504"
+  },
+  {
+    "day": "Monday",
+    "section": "5B",
+    "time": "1.00 PM - 2.20 PM",
+    "course": "CSE 3100",
+    "faculty": "AIN",
+    "room": "1504"
+  },
+  {
+    "day": "Monday",
+    "section": "5B",
+    "time": "2.30 PM - 3.50 PM",
+    "course": "CSE 3104",
+    "faculty": "MOH",
+    "room": "1504"
+  },
+  {
+    "day": "Monday",
+    "section": "5B",
+    "time": "4.00 PM - 5.20 PM",
+    "course": "CSE 3104",
+    "faculty": "MOH",
+    "room": "1504"
+  },
+  {
+    "day": "Monday",
+    "section": "5B",
+    "time": "10.00 AM - 11.20 AM",
+    "course": "CSE 3106",
+    "faculty": "TD",
+    "room": "1504"
+  },
+  {
+    "day": "Monday",
+    "section": "5B",
+    "time": "2.30 PM - 3.50 PM",
+    "course": "CSE 3100",
+    "faculty": "SDS",
+    "room": "1504"
+  },
+  {
+    "day": "Monday",
+    "section": "5B",
+    "time": "4.00 PM - 5.20 PM",
+    "course": "CSE 3100",
+    "faculty": "SDS",
+    "room": "1504"
+  },
+  {
+    "day": "Tuesday",
+    "section": "5B",
+    "time": "1.00 PM - 2.20 PM",
+    "course": "STA 3001",
+    "faculty": "ABM",
+    "room": "1504"
+  },
+  {
+    "day": "Tuesday",
+    "section": "5B",
+    "time": "4.00 PM - 5.20 PM",
+    "course": "CSE 3103",
+    "faculty": "MOH",
+    "room": "1504"
+  },
+  {
+    "day": "Wednesday",
+    "section": "5B",
+    "time": "11.30 AM - 12.50 PM",
+    "course": "CSE 3102",
+    "faculty": "TD",
+    "room": "1504"
+  },
+  {
+    "day": "Wednesday",
+    "section": "5B",
+    "time": "1.00 PM - 2.20 PM",
+    "course": "CSE 3102",
+    "faculty": "TD",
+    "room": "1504"
+  },
+  {
+    "day": "Wednesday",
+    "section": "5B",
+    "time": "2.30 PM - 3.50 PM",
+    "course": "CSE 3104",
+    "faculty": "MOH",
+    "room": "1504"
+  },
+  {
+    "day": "Wednesday",
+    "section": "5B",
+    "time": "4.00 PM - 5.20 PM",
+    "course": "CSE 3104",
+    "faculty": "MOH",
+    "room": "1504"
+  },
+  {
+    "day": "Wednesday",
+    "section": "5B",
+    "time": "2.30 PM - 3.50 PM",
+    "course": "CSE 3102",
+    "faculty": "TD",
+    "room": "1504"
+  },
+  {
+    "day": "Wednesday",
+    "section": "5B",
+    "time": "4.00 PM - 5.20 PM",
+    "course": "CSE 3102",
+    "faculty": "TD",
+    "room": "1504"
+  },
+  {
+    "day": "Thursday",
+    "section": "5B",
+    "time": "10.00 AM - 11.20 AM",
+    "course": "STA 3001",
+    "faculty": "ABM",
+    "room": "1504"
+  },
+  {
+    "day": "Thursday",
+    "section": "5B",
+    "time": "1.00 PM - 2.20 PM",
+    "course": "CSE 3101",
+    "faculty": "TD",
+    "room": "1504"
+  },
+  {
+    "day": "Thursday",
+    "section": "5B",
+    "time": "2.30 PM - 3.50 PM",
+    "course": "CSE 3105",
+    "faculty": "TD",
+    "room": "1504"
+  },
+  {
+    "day": "Thursday",
+    "section": "5B",
+    "time": "4.00 PM - 5.20 PM",
+    "course": "CSE 3107",
+    "faculty": "FHM",
+    "room": "1504"
+  },
+  {
+    "day": "Thursday",
+    "section": "5B",
+    "time": "2.30 PM - 3.50 PM",
+    "course": "CSE 3106",
+    "faculty": "TD",
+    "room": "1504"
   }
 ];
 

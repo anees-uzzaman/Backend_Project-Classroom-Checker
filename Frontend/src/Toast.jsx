@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { IconCheck, IconInfo, IconClose } from './icons';
+import { IconCheck, IconInfo, IconClose, IconX } from './icons';
 import './App.css';
 
 export default function Toast({ message, type = 'success', onClose }) {

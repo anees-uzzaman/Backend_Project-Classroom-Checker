@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import './App.css';
 import Auth from './Auth';
 import Sidebar from './Sidebar';
@@ -7,10 +7,13 @@ import MyBookings from './MyBookings';
 import UpdateRoutine from './UpdateRoutine';
 import MyProfile from './MyProfile';
 import CurrentRoutine from './CurrentRoutine';
+import AdminPanel from './AdminPanel';
 import initialRoutine, { roomDetails as initialRoomDetails } from './routine';
+import { authAPI, bookingAPI, routineAPI, getStoredSessionUser } from './api';
 
 export default function App() {
   const [user, setUser] = useState(null);
+  const [isInitializing, setIsInitializing] = useState(true);
   const [currentPage, setCurrentPage] = useState('Dashboard');
   const [myBookings, setMyBookings] = useState([]);
   const [globalBookings, setGlobalBookings] = useState([
@@ -19,12 +22,72 @@ export default function App() {
   const [routine, setRoutine] = useState(initialRoutine);
   const [roomDetails, setRoomDetails] = useState(initialRoomDetails);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // Restore authenticated session on mount
+  useEffect(() => {
+    async function restoreSession() {
+      try {
+        const stored = getStoredSessionUser();
+        if (stored) {
+          setUser(stored);
+        }
+        const me = await authAPI.getMe().catch(() => null);
+        if (me && me.user) {
+          setUser(me.user);
+        }
+      } catch (err) {
+        console.warn('Session restoration failed:', err);
+      } finally {
+        setIsInitializing(false);
+      }
+    }
+    restoreSession();
+  }, []);
+
+  // Sync data with backend on load
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const bookingRes = await bookingAPI.getBookings().catch(() => null);
+        if (bookingRes && Array.isArray(bookingRes.bookings) && bookingRes.bookings.length > 0) {
+          setGlobalBookings(bookingRes.bookings);
+        }
+
+        const routineRes = await routineAPI.getRoutines().catch(() => null);
+        if (routineRes && Array.isArray(routineRes.routine) && routineRes.routine.length > 0) {
+          setRoutine(routineRes.routine);
+        } else {
+          // Seed initial routines in background if backend has no records
+          routineAPI.seed(initialRoutine, initialRoomDetails).catch(() => {});
+        }
+
+        const roomRes = await routineAPI.getRooms().catch(() => null);
+        if (roomRes && roomRes.rooms && Object.keys(roomRes.rooms).length > 0) {
+          setRoomDetails(prev => ({ ...prev, ...roomRes.rooms }));
+        }
+      } catch (err) {
+        console.warn('Backend data sync fallback to local state', err);
+      }
+    }
+    loadData();
+  }, []);
+
+  // Update user's personal bookings when global bookings or user changes
+  useEffect(() => {
+    if (user) {
+      setMyBookings(globalBookings.filter(b => b.user === user.username || b.user === user.id));
+    } else {
+      setMyBookings([]);
+    }
+  }, [globalBookings, user]);
+
   const pageTitle = currentPage.replace(/([A-Z])/g, ' $1').trim();
   const pageSubtitle = {
     Dashboard: 'Find available classrooms and manage bookings quickly.',
     MyBookings: 'Review and manage your current reservations.',
     CurrentRoutine: 'View the full class routine schedule.',
     UpdateRoutine: 'Submit routine changes for review and planning.',
+    AdminPanel: 'Manage user permissions and administrative role assignments.',
     MyProfile: 'View and update your account details securely.'
   }[currentPage];
 
@@ -33,8 +96,17 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    authAPI.logout();
     setUser(null);
     setCurrentPage('Dashboard');
+  };
+
+  const handleRoutineUpdated = (newRoutines, mode = 'replace') => {
+    if (mode === 'append') {
+      setRoutine(prev => [...prev, ...newRoutines]);
+    } else {
+      setRoutine(newRoutines);
+    }
   };
 
   const renderContent = () => {
@@ -42,6 +114,7 @@ export default function App() {
       case 'Dashboard':
         return <Dashboard
                   user={user}
+                  setUser={setUser}
                   myBookings={myBookings}
                   setMyBookings={setMyBookings}
                   globalBookings={globalBookings}
@@ -52,14 +125,17 @@ export default function App() {
       case 'MyBookings':
         return <MyBookings bookings={myBookings} setMyBookings={setMyBookings} setGlobalBookings={setGlobalBookings} />;
       case 'CurrentRoutine':
-        return <CurrentRoutine routine={routine} />;
+        return <CurrentRoutine routine={routine} user={user} />;
       case 'UpdateRoutine':
         return <UpdateRoutine user={user} routine={routine} setRoutine={setRoutine} roomDetails={roomDetails} setRoomDetails={setRoomDetails} />;
+      case 'AdminPanel':
+        return <AdminPanel user={user} setUser={setUser} onRoutineUpdated={handleRoutineUpdated} />;
       case 'MyProfile':
         return <MyProfile user={user} setUser={setUser} handleLogout={handleLogout} />;
       default:
         return <Dashboard
                   user={user}
+                  setUser={setUser}
                   myBookings={myBookings}
                   setMyBookings={setMyBookings}
                   globalBookings={globalBookings}
@@ -69,6 +145,14 @@ export default function App() {
                 />;
     }
   };
+
+  if (isInitializing) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg)' }}>
+        <div className="spinner"></div>
+      </div>
+    );
+  }
 
   if (!user) {
     return <Auth onLogin={handleLogin} />;
@@ -97,7 +181,7 @@ export default function App() {
               </svg>
             </button>
             <div>
-              <p className="eyebrow">Welcome back, {user.username}</p>
+              <p className="eyebrow">Welcome back, {user.name || user.username}</p>
               <h2>
                 <span className="header-logo-icon">
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

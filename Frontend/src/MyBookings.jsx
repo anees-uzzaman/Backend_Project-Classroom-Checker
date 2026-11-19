@@ -1,10 +1,18 @@
 import { useState } from 'react';
 import { IconCalendar } from './icons';
+import { bookingAPI } from './api';
 
 export default function MyBookings({ bookings, setMyBookings, setGlobalBookings }) {
   const [cancelId, setCancelId] = useState(null);
 
-  const cancelBooking = (id) => {
+  const cancelBooking = async (id) => {
+    try {
+      await bookingAPI.cancelBooking(id).catch(err => {
+        console.warn('Backend cancel offline, proceeding with local update', err);
+      });
+    } catch (err) {
+      console.warn(err);
+    }
     setMyBookings(bookings.filter(b => b.id !== id));
     if (setGlobalBookings) {
       setGlobalBookings((prev) => prev.filter((b) => b.id !== id));

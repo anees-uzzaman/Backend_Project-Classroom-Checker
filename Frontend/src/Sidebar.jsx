@@ -1,11 +1,12 @@
-import { IconDashboard, IconBookings, IconRoutine, IconProfile, IconLogout, IconClose, IconSchool } from './icons';
+import { IconDashboard, IconBookings, IconRoutine, IconProfile, IconLogout, IconClose, IconSchool, IconShield } from './icons';
 
 export default function Sidebar({ isOpen, setIsOpen, setCurrentPage, currentPage, user, handleLogout }) {
   const menuItems = [
     { id: 'Dashboard', label: 'Dashboard', icon: IconDashboard },
     { id: 'MyBookings', label: 'My Bookings', icon: IconBookings },
     { id: 'CurrentRoutine', label: 'Current Routine', icon: IconRoutine },
-    ...(user && user.designation === 'Teacher' ? [{ id: 'UpdateRoutine', label: 'Update Routine', icon: IconRoutine }] : []),
+    ...(user && (user.designation === 'Teacher' || user.designation === 'Admin') ? [{ id: 'UpdateRoutine', label: 'Update Routine', icon: IconRoutine }] : []),
+    ...(user && user.designation === 'Admin' ? [{ id: 'AdminPanel', label: 'Admin Panel', icon: IconShield }] : []),
     { id: 'MyProfile', label: 'My Profile', icon: IconProfile },
   ];
 

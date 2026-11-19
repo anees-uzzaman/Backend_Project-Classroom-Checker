@@ -18,8 +18,8 @@ A modern React application designed to streamline classroom availability checks,
 
 ## 🛠️ Tech Stack
 
-* **Frontend Library**: React
-* **Styling Framework**: Tailwind CSS
+* **Frontend Library**: React (Vite)
+* **Styling**: Modern CSS Design System (CSS Custom Properties)
 * **Language**: JavaScript (ES6+)
 * **Deployment**: GitHub Pages & Vercel
 
