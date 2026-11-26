@@ -235,9 +235,13 @@ export default function Auth({ onLogin }) {
           </button>
         </form>
 
-        <p onClick={() => { setIsLogin(!isLogin); setError(''); }} className="toggle-auth">
-          {isLogin ? "Don't have an account? Sign up" : "Already have an account? Log in"}
-        </p>
+        <button
+          type="button"
+          onClick={() => { setIsLogin(!isLogin); setError(''); }}
+          className="toggle-auth"
+        >
+          {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+        </button>
       </div>
     </div>
   );

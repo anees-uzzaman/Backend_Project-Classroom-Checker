@@ -1,8 +1,16 @@
 import { useState, useMemo } from 'react';
-import { roomDetails } from "./routine";
+import { roomDetails as defaultRoomDetails } from "./routine";
 import { IconSearch, IconList, IconRoom, IconCalendar } from './icons';
 import { bookingAPI, authAPI } from './api';
+import {
+  ACADEMIC_DAYS,
+  TIME_SLOTS,
+  matchesStudentSection,
+  sortRoutineEntries,
+  normalizeRoomKey
+} from './routineParser';
 import Toast from './Toast';
+import DayRoutineGrid from './DayRoutineGrid';
 
 export default function Dashboard({
   user,
@@ -12,8 +20,13 @@ export default function Dashboard({
   globalBookings,
   setGlobalBookings,
   setCurrentPage,
-  routine
+  routine,
+  roomDetails: propRoomDetails
 }) {
+  const roomDetails = propRoomDetails && Object.keys(propRoomDetails).length > 0
+    ? propRoomDetails
+    : defaultRoomDetails;
+
   const isTeacher = user && user.designation === 'Teacher';
   const isAdmin = user && user.designation === 'Admin';
   const isStudent = !isTeacher && !isAdmin;
@@ -50,53 +63,25 @@ export default function Dashboard({
     setToast({ message, type, id: Date.now() });
   };
 
-  // Day order & Time sorting helpers
-  const dayOrder = {
-    'saturday': 1,
-    'sunday': 2,
-    'monday': 3,
-    'tuesday': 4,
-    'wednesday': 5,
-    'thursday': 6,
-    'friday': 7
-  };
-
-  const parseTimeSlotStart = (timeStr) => {
-    const m = (timeStr || '').match(/(\d{1,2})[\.:](\d{2})\s*([AaPp][Mm])?/);
-    if (!m) return 0;
-    let hour = parseInt(m[1], 10);
-    const min = parseInt(m[2], 10);
-    const ampm = m[3] ? m[3].toUpperCase() : '';
-    if (ampm === 'PM' && hour < 12) hour += 12;
-    if (ampm === 'AM' && hour === 12) hour = 0;
-    return hour * 60 + min;
-  };
-
   // Filter routine strictly according to user's assigned section or faculty code
   const userRoutine = useMemo(() => {
     let filtered = [];
     if (isStudent) {
       if (!userSection) return [];
-      filtered = routine.filter(r => r.section && r.section.trim().toUpperCase() === userSection);
+      filtered = routine.filter(r => matchesStudentSection(r.section, userSection));
     } else if (isTeacher) {
       if (!userFaculty) return [];
       filtered = routine.filter(r => r.faculty && r.faculty.trim().toUpperCase() === userFaculty);
     } else {
       // Admin: View selected section or faculty
       if (adminViewMode === 'section') {
-        filtered = routine.filter(r => r.section && r.section.trim().toUpperCase() === adminSection.toUpperCase());
+        filtered = routine.filter(r => matchesStudentSection(r.section, adminSection));
       } else {
         filtered = routine.filter(r => r.faculty && r.faculty.trim().toUpperCase() === adminFaculty.toUpperCase());
       }
     }
 
-    // Sort whole routine in academic day and time order
-    return [...filtered].sort((a, b) => {
-      const dayA = dayOrder[a.day.toLowerCase()] || 99;
-      const dayB = dayOrder[b.day.toLowerCase()] || 99;
-      if (dayA !== dayB) return dayA - dayB;
-      return parseTimeSlotStart(a.time) - parseTimeSlotStart(b.time);
-    });
+    return sortRoutineEntries(filtered);
   }, [routine, isStudent, isTeacher, userSection, userFaculty, adminSection, adminFaculty, adminViewMode]);
 
   // Admin distinct lists
@@ -148,25 +133,34 @@ export default function Dashboard({
 
   // Room checker handlers
   const handleSearch = () => {
-    const occupiedRooms = routine
-      .filter(item => item.day === day && item.time === time)
-      .map(item => item.room);
+    const occupiedKeys = new Set(
+      routine
+        .filter(item => item.day === day && item.time === time)
+        .map(item => normalizeRoomKey(item.room))
+    );
 
-    const bookedRooms = (globalBookings || [])
-      .filter(b => b.day === day && b.time === time)
-      .map(b => b.room);
+    const bookedKeys = new Set(
+      (globalBookings || [])
+        .filter(b => b.day === day && b.time === time)
+        .map(b => normalizeRoomKey(b.room))
+    );
+
+    const minCap = Number(capacity) || 1;
 
     const freeRooms = Object.keys(roomDetails).filter(roomName => {
-      if (occupiedRooms.includes(roomName) || bookedRooms.includes(roomName)) return false;
+      if (/^(online|tba)$/i.test(roomName.trim())) return false;
+      const key = normalizeRoomKey(roomName);
+      if (occupiedKeys.has(key) || bookedKeys.has(key)) return false;
 
       const details = roomDetails[roomName];
-      if (details.capacity < capacity) return false;
+      if (!details) return false;
+      if (details.capacity < minCap) return false;
       if (needsAC && !details.ac) return false;
       if (needsProjector && !details.projector) return false;
       if (isLab && !details.lab) return false;
 
       return true;
-    });
+    }).sort();
 
     setAvailableRooms(freeRooms);
     if (freeRooms.length === 0) {
@@ -193,21 +187,17 @@ export default function Dashboard({
     };
 
     try {
-      await bookingAPI.createBooking(newBooking).catch(err => {
-        if (err.status === 409) {
-          throw err;
-        }
-        console.warn('Booking API offline, proceeding with local update', err);
-      });
+      const res = await bookingAPI.createBooking(newBooking);
+      const savedBooking = (res && res.booking) ? res.booking : newBooking;
 
-      setMyBookings([...myBookings, newBooking]);
-      setGlobalBookings([newBooking, ...globalBookings]);
-      showToast(`${bookingRoom} booked successfully!`, 'success');
+      setMyBookings(prev => [savedBooking, ...prev]);
+      setGlobalBookings(prev => [savedBooking, ...prev]);
+      showToast(`Room ${bookingRoom} booked successfully!`, 'success');
       setBookingRoom(null);
       setAvailableRooms(null);
       setCurrentPage && setCurrentPage('MyBookings');
     } catch (err) {
-      showToast(err.message || `Failed to book ${bookingRoom}`, 'error');
+      showToast(err.message || `Failed to book Room ${bookingRoom}`, 'error');
       setBookingRoom(null);
     }
   };
@@ -233,57 +223,83 @@ export default function Dashboard({
       )}
 
       {bookingRoom && (
-        <div className="modal-overlay" onClick={() => setBookingRoom(null)}>
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="booking-modal-title"
+          onClick={() => setBookingRoom(null)}
+        >
           <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>🏫</div>
-            <h3>Confirm Booking</h3>
-            <p>Are you sure you want to book <strong>{bookingRoom}</strong> on <strong>{day}</strong> at <strong>{time}</strong>?</p>
+            <div className="modal-primary-icon" aria-hidden="true">
+              <IconRoom />
+            </div>
+            <h3 id="booking-modal-title">Confirm Booking</h3>
+            <p>Book <strong>Room {bookingRoom}</strong> on <strong>{day}</strong> at <strong>{time}</strong>?</p>
             <div className="modal-actions">
-              <button className="secondary-btn" onClick={() => setBookingRoom(null)}>Cancel</button>
-              <button className="primary-btn" onClick={handleBookingConfirm}>Confirm Booking</button>
+              <button type="button" className="secondary-btn" onClick={() => setBookingRoom(null)}>Cancel</button>
+              <button type="button" className="primary-btn" onClick={handleBookingConfirm}>Confirm Booking</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="tabs">
-        <button className={tab === 'myRoutine' ? 'active' : ''} onClick={() => setTab('myRoutine')}>
-          <span className="tab-icon"><IconCalendar /></span>
+      {/* Segmented Tabs */}
+      <div className="tabs" role="tablist" aria-label="Dashboard sections">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'myRoutine'}
+          className={tab === 'myRoutine' ? 'active' : ''}
+          onClick={() => setTab('myRoutine')}
+        >
+          <span className="tab-icon" aria-hidden="true"><IconCalendar /></span>
           {isStudent
             ? `My Routine${userSection ? ` (Sec ${userSection})` : ''}`
             : isTeacher
             ? `My Classes${userFaculty ? ` (${userFaculty})` : ''}`
             : 'Schedule Explorer'}
         </button>
-        <button className={tab === 'checker' ? 'active' : ''} onClick={() => setTab('checker')}>
-          <span className="tab-icon"><IconSearch /></span> Find Room
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'checker'}
+          className={tab === 'checker' ? 'active' : ''}
+          onClick={() => setTab('checker')}
+        >
+          <span className="tab-icon" aria-hidden="true"><IconSearch /></span> Find Room
         </button>
-        <button className={tab === 'others' ? 'active' : ''} onClick={() => setTab('others')}>
-          <span className="tab-icon"><IconList /></span> Recent Bookings
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'others'}
+          className={tab === 'others' ? 'active' : ''}
+          onClick={() => setTab('others')}
+        >
+          <span className="tab-icon" aria-hidden="true"><IconList /></span> Recent Bookings
         </button>
       </div>
 
-      {/* TAB 1: Role-Tailored Single Unified Routine Table */}
+      {/* TAB 1: Role-Tailored Per-Day Routine */}
       {tab === 'myRoutine' && (
-        <div className="tailored-routine-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+        <div className="tailored-routine-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
           {/* Header Card */}
           <div className="card-panel">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <div style={{ width: '44px', height: '44px', borderRadius: '12px', background: isTeacher ? 'linear-gradient(135deg, #f59e0b, #d97706)' : 'linear-gradient(135deg, var(--primary), var(--accent))', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', flexShrink: 0, boxShadow: 'var(--shadow-sm)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                <div className={`icon-tile ${isTeacher ? 'icon-tile-warning' : ''}`} aria-hidden="true">
                   <IconCalendar />
                 </div>
                 <div>
-                  <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800 }}>
+                  <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700 }}>
                     {isStudent && (userSection ? `Class Routine — Section ${userSection}` : 'Class Routine')}
-                    {isTeacher && (userFaculty ? `Assigned Teaching Schedule — Faculty ${userFaculty}` : 'Assigned Teaching Schedule')}
+                    {isTeacher && (userFaculty ? `Teaching Schedule — Faculty ${userFaculty}` : 'Teaching Schedule')}
                     {isAdmin && `Schedule Explorer (${adminViewMode === 'section' ? `Section ${adminSection}` : `Faculty ${adminFaculty}`})`}
                   </h3>
-                  <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                    {isStudent && userSection && `Official timetable strictly for Section ${userSection}`}
-                    {isTeacher && userFaculty && `All assigned lectures and time slots for Faculty code ${userFaculty}`}
-                    {isAdmin && 'Administrative routine schedule inspector'}
+                  <p style={{ margin: '0.15rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                    {isStudent && userSection && `Daily timetable for Section ${userSection}`}
+                    {isTeacher && userFaculty && `Assigned classes and rooms for ${userFaculty}`}
+                    {isAdmin && 'Inspect schedules by section or faculty'}
                   </p>
                 </div>
               </div>
@@ -291,12 +307,12 @@ export default function Dashboard({
               {/* Status Badge */}
               <div>
                 {isStudent && userSection && (
-                  <span className="user-chip" style={{ background: 'var(--primary)', color: 'white', fontWeight: 700, padding: '0.4rem 0.85rem', fontSize: '0.85rem' }}>
+                  <span className="user-chip badge-solid-primary" style={{ padding: '0.38rem 0.85rem', fontSize: '0.82rem' }}>
                     Section {userSection}
                   </span>
                 )}
                 {isTeacher && userFaculty && (
-                  <span className="user-chip" style={{ background: '#f59e0b', color: 'white', fontWeight: 700, padding: '0.4rem 0.85rem', fontSize: '0.85rem' }}>
+                  <span className="user-chip badge-warning" style={{ padding: '0.38rem 0.85rem', fontSize: '0.82rem' }}>
                     Faculty {userFaculty}
                   </span>
                 )}
@@ -304,26 +320,32 @@ export default function Dashboard({
                 {isAdmin && (
                   <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                     <select
+                      className="styled-input"
+                      aria-label="Schedule filter mode"
                       value={adminViewMode}
                       onChange={(e) => setAdminViewMode(e.target.value)}
-                      style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem', borderRadius: 'var(--radius-md)' }}
+                      style={{ width: 'auto', minHeight: '38px', fontSize: '0.85rem' }}
                     >
                       <option value="section">Section</option>
                       <option value="faculty">Faculty</option>
                     </select>
                     {adminViewMode === 'section' ? (
                       <select
+                        className="styled-input"
+                        aria-label="Select section"
                         value={adminSection}
                         onChange={(e) => setAdminSection(e.target.value)}
-                        style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem', fontWeight: 700, borderRadius: 'var(--radius-md)' }}
+                        style={{ width: 'auto', minHeight: '38px', fontSize: '0.85rem', fontWeight: 600 }}
                       >
                         {distinctSections.map(s => <option key={s} value={s}>Sec {s}</option>)}
                       </select>
                     ) : (
                       <select
+                        className="styled-input"
+                        aria-label="Select faculty"
                         value={adminFaculty}
                         onChange={(e) => setAdminFaculty(e.target.value)}
-                        style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem', fontWeight: 700, borderRadius: 'var(--radius-md)' }}
+                        style={{ width: 'auto', minHeight: '38px', fontSize: '0.85rem', fontWeight: 600 }}
                       >
                         {distinctFaculties.map(f => <option key={f} value={f}>{f}</option>)}
                       </select>
@@ -345,10 +367,11 @@ export default function Dashboard({
                 <form onSubmit={handleSaveSection} style={{ display: 'flex', gap: '0.75rem', maxWidth: '360px' }}>
                   <input
                     type="text"
+                    className="styled-input"
                     placeholder="e.g. 5B"
                     value={inputSection}
                     onChange={(e) => setInputSection(e.target.value.toUpperCase())}
-                    style={{ flex: 1, padding: '0.5rem 0.75rem', textTransform: 'uppercase', fontWeight: 700 }}
+                    style={{ flex: 1, textTransform: 'uppercase', fontWeight: 700 }}
                     required
                   />
                   <button type="submit" className="primary-btn small-btn" disabled={isSavingPref}>
@@ -370,10 +393,11 @@ export default function Dashboard({
                 <form onSubmit={handleSaveFaculty} style={{ display: 'flex', gap: '0.75rem', maxWidth: '360px' }}>
                   <input
                     type="text"
+                    className="styled-input"
                     placeholder="e.g. SDS"
                     value={inputFaculty}
                     onChange={(e) => setInputFaculty(e.target.value.toUpperCase())}
-                    style={{ flex: 1, padding: '0.5rem 0.75rem', textTransform: 'uppercase', fontWeight: 700 }}
+                    style={{ flex: 1, textTransform: 'uppercase', fontWeight: 700 }}
                     required
                   />
                   <button type="submit" className="primary-btn small-btn" disabled={isSavingPref}>
@@ -384,11 +408,11 @@ export default function Dashboard({
             )}
           </div>
 
-          {/* Single Unified Routine Table (Whole routine in one table) */}
-          <div className="card-panel">
-            {((isStudent && userSection) || (isTeacher && userFaculty) || isAdmin) && (
-              <>
-                {userRoutine.length === 0 ? (
+          {/* Per-Day Horizontal Routine Grid (Every day rendered in one go) */}
+          {((isStudent && userSection) || (isTeacher && userFaculty) || isAdmin) && (
+            <>
+              {userRoutine.length === 0 ? (
+                <div className="card-panel">
                   <div className="empty-state" style={{ padding: '2.5rem' }}>
                     <div className="empty-state-icon"><IconCalendar /></div>
                     <h4>No classes scheduled</h4>
@@ -396,91 +420,31 @@ export default function Dashboard({
                       No classes are currently scheduled for {isStudent ? `Section ${userSection}` : isTeacher ? `Faculty ${userFaculty}` : 'this selection'}.
                     </p>
                   </div>
-                ) : (
-                  <div className="routine-table-wrapper">
-                    <table className="routine-table">
-                      <thead>
-                        <tr>
-                          <th style={{ width: '130px' }}>Day</th>
-                          <th style={{ width: '190px' }}>Time Slot</th>
-                          <th>Course Code</th>
-                          {isTeacher ? <th>Section</th> : <th>Faculty</th>}
-                          <th>Classroom</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {userRoutine.map((item, idx) => {
-                          // Check if day changed from previous row for visual grouping
-                          const prevDay = idx > 0 ? userRoutine[idx - 1].day : null;
-                          const isNewDay = item.day !== prevDay;
-
-                          return (
-                            <tr
-                              key={idx}
-                              style={{
-                                borderTop: isNewDay && idx > 0 ? '2px solid var(--border)' : undefined
-                              }}
-                            >
-                              <td>
-                                <span
-                                  className="routine-day-badge"
-                                  style={{
-                                    display: 'inline-block',
-                                    fontSize: '0.8rem',
-                                    padding: '0.2rem 0.6rem',
-                                    fontWeight: 700
-                                  }}
-                                >
-                                  {item.day}
-                                </span>
-                              </td>
-                              <td>
-                                <strong style={{ color: 'var(--text-main)', fontSize: '0.9rem' }}>{item.time}</strong>
-                              </td>
-                              <td>
-                                <code style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--primary)' }}>
-                                  {item.course}
-                                </code>
-                              </td>
-                              <td>
-                                {isTeacher ? (
-                                  <span className="user-chip" style={{ background: 'var(--primary-soft)', color: 'var(--primary)', fontWeight: 700 }}>
-                                    Section {item.section}
-                                  </span>
-                                ) : (
-                                  <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
-                                    {item.faculty}
-                                  </span>
-                                )}
-                              </td>
-                              <td>
-                                <span className="routine-room-badge" style={{ fontSize: '0.85rem' }}>
-                                  Room {item.room}
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+                </div>
+              ) : (
+                <DayRoutineGrid
+                  entries={userRoutine}
+                  isTeacher={isTeacher}
+                  isAdmin={isAdmin}
+                  days={ACADEMIC_DAYS}
+                  showOffDays={true}
+                />
+              )}
+            </>
+          )}
         </div>
       )}
 
       {/* TAB 2: Room Availability Checker */}
       {tab === 'checker' && (
         <div className="checker-panel" key="checker">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.75rem' }}>
-            <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: 'linear-gradient(135deg, var(--primary), var(--accent))', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', marginBottom: '1.5rem' }}>
+            <div className="icon-tile" aria-hidden="true">
               <IconSearch />
             </div>
             <div>
               <h3 style={{ margin: 0 }}>Room Availability Checker</h3>
-              <p style={{ margin: '0.25rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>Search for available rooms based on your requirements</p>
+              <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>Search for open classrooms matching your requirements</p>
             </div>
           </div>
           
@@ -488,23 +452,18 @@ export default function Dashboard({
             <div className="form-group">
               <label htmlFor="day">Day</label>
               <select id="day" value={day} onChange={(e) => setDay(e.target.value)}>
-                <option>Saturday</option>
-                <option>Sunday</option>
-                <option>Monday</option>
-                <option>Tuesday</option>
-                <option>Wednesday</option>
-                <option>Thursday</option>
+                {ACADEMIC_DAYS.map(d => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
               </select>
             </div>
 
             <div className="form-group">
               <label htmlFor="time">Time Slot</label>
               <select id="time" value={time} onChange={(e) => setTime(e.target.value)}>
-                <option>8.30 AM - 9.50 AM</option>
-                <option>10.00 AM - 11.20 AM</option>
-                <option>11.30 AM - 12.50 PM</option>
-                <option>1.00 PM - 2.20 PM</option>
-                <option>2.30 PM - 3.50 PM</option>
+                {TIME_SLOTS.map(slot => (
+                  <option key={slot} value={slot}>{slot}</option>
+                ))}
               </select>
             </div>
 
@@ -579,13 +538,13 @@ export default function Dashboard({
       {/* TAB 3: Recent Bookings */}
       {tab === 'others' && (
         <div className="global-bookings-panel" key="others">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
-            <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: 'linear-gradient(135deg, #f59e0b, #d97706)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', marginBottom: '1.5rem' }}>
+            <div className="icon-tile icon-tile-warning" aria-hidden="true">
               <IconCalendar />
             </div>
             <div>
               <h3 style={{ margin: 0 }}>Recent Bookings</h3>
-              <p style={{ margin: '0.25rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>See all recent room bookings</p>
+              <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>Recent room reservations across campus</p>
             </div>
           </div>
           {globalBookings.length === 0 ? (

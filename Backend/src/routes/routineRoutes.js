@@ -1,10 +1,11 @@
 const express = require('express');
 const multer = require('multer');
-const xlsx = require('xlsx');
 const { PDFParse } = require('pdf-parse');
 const Routine = require('../../models/Routine');
+const RoutineRequest = require('../../models/RoutineRequest');
 const RoomDetail = require('../../models/RoomDetail');
-const { authenticateToken, optionalAuthenticateToken, requireTeacher } = require('../middleware/auth');
+const { authenticateToken, requireTeacher, requireAdmin } = require('../middleware/auth');
+const { parseRoutineFromExcel, parseRoutineFromText } = require('../utils/routineParser');
 
 const router = express.Router();
 const upload = multer({
@@ -12,110 +13,47 @@ const upload = multer({
   limits: { fileSize: 15 * 1024 * 1024 } // 15MB limit
 });
 
-// Helper: Normalize key names for flexible column matching in Excel/CSV
-function normalizeRoutineRow(row, defaultDay = 'Saturday') {
-  const getField = (candidates) => {
-    for (const key of Object.keys(row)) {
-      const cleanKey = key.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-      for (const candidate of candidates) {
-        if (cleanKey === candidate.toLowerCase().replace(/[^a-z0-9]/g, '')) {
-          const val = String(row[key]).trim();
-          if (val) return val;
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function upsertRoomDetailsMap(roomDetails, fallbackEntries = []) {
+  if (roomDetails && typeof roomDetails === 'object' && Object.keys(roomDetails).length > 0) {
+    for (const [roomName, details] of Object.entries(roomDetails)) {
+      if (!roomName || /^tba$/i.test(roomName)) continue;
+      await RoomDetail.findOneAndUpdate(
+        { room: roomName },
+        {
+          room: roomName,
+          capacity: Number(details.capacity) || 40,
+          ac: details.ac !== undefined ? Boolean(details.ac) : true,
+          projector: details.projector !== undefined ? Boolean(details.projector) : true,
+          lab: Boolean(details.lab)
+        },
+        { upsert: true, new: true }
+      );
+    }
+    return;
+  }
+
+  // Fallback: auto-discover rooms from parsed routine entries
+  const uniqueRooms = [...new Set(fallbackEntries.map(e => e.room).filter(r => r && !/^tba$/i.test(r)))];
+  for (const r of uniqueRooms) {
+    const isOnline = /^online$/i.test(r);
+    await RoomDetail.findOneAndUpdate(
+      { room: r },
+      {
+        $setOnInsert: {
+          room: r,
+          capacity: isOnline ? 1000 : 40,
+          ac: !isOnline,
+          projector: !isOnline,
+          lab: /L$/i.test(r)
         }
-      }
-    }
-    return '';
-  };
-
-  const day = getField(['day', 'weekday', 'dayofweek']) || defaultDay;
-  const section = getField(['section', 'sec', 'batch']);
-  const time = getField(['time', 'timeslot', 'slot', 'period', 'hour']);
-  const course = getField(['course', 'coursecode', 'subject', 'class']);
-  const faculty = getField(['faculty', 'teacher', 'instructor', 'initials']) || 'TBA';
-  const room = getField(['room', 'roomno', 'classroom', 'hall']);
-
-  if (!section || !time || !course || !room) {
-    return null;
+      },
+      { upsert: true }
+    );
   }
-
-  // Capitalize Day
-  const cleanDay = day.charAt(0).toUpperCase() + day.slice(1).toLowerCase();
-
-  return {
-    day: cleanDay,
-    section: section.trim().toUpperCase(),
-    time: time.trim(),
-    course: course.trim().toUpperCase(),
-    faculty: faculty.trim().toUpperCase(),
-    room: room.trim()
-  };
-}
-
-// Helper: Parse routine from Excel/CSV buffer
-function parseRoutineFromExcel(buffer) {
-  const workbook = xlsx.read(buffer, { type: 'buffer' });
-  const allEntries = [];
-
-  for (const sheetName of workbook.SheetNames) {
-    const sheet = workbook.Sheets[sheetName];
-    const rows = xlsx.utils.sheet_to_json(sheet, { defval: '' });
-
-    const dayMatch = sheetName.match(/^(Saturday|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday)/i);
-    const defaultDay = dayMatch ? dayMatch[1].charAt(0).toUpperCase() + dayMatch[1].slice(1).toLowerCase() : 'Saturday';
-
-    for (const row of rows) {
-      const entry = normalizeRoutineRow(row, defaultDay);
-      if (entry) {
-        allEntries.push(entry);
-      }
-    }
-  }
-
-  return allEntries;
-}
-
-// Helper: Parse routine from extracted PDF text
-function parseRoutineFromText(text) {
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const results = [];
-  let currentDay = 'Saturday';
-
-  const daysRegex = /^(Saturday|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday)/i;
-  const timeRegex = /(\d{1,2}[\.:]\d{2}(?:\s*[AaPp][Mm])?\s*[-–]\s*\d{1,2}[\.:]\d{2}(?:\s*[AaPp][Mm])?)/;
-
-  for (const line of lines) {
-    const dayMatch = line.match(daysRegex);
-    if (dayMatch) {
-      currentDay = dayMatch[1].charAt(0).toUpperCase() + dayMatch[1].slice(1).toLowerCase();
-    }
-
-    const timeMatch = line.match(timeRegex);
-    if (timeMatch) {
-      const timeSlot = timeMatch[1].trim();
-      const remaining = line.replace(timeSlot, ' ').trim();
-      const parts = remaining.split(/[\t,|;]+|\s{2,}/).map(p => p.trim()).filter(Boolean);
-      const tokens = parts.length >= 3 ? parts : remaining.split(/\s+/).filter(Boolean);
-      const filteredTokens = tokens.filter(t => !t.match(daysRegex));
-
-      if (filteredTokens.length >= 3) {
-        const section = filteredTokens[0];
-        const course = filteredTokens[1];
-        const faculty = filteredTokens.length >= 4 ? filteredTokens[2] : 'TBA';
-        const room = filteredTokens[filteredTokens.length - 1];
-
-        results.push({
-          day: currentDay,
-          section: section.trim().toUpperCase(),
-          time: timeSlot,
-          course: course.trim().toUpperCase(),
-          faculty: faculty.trim().toUpperCase(),
-          room: room.trim()
-        });
-      }
-    }
-  }
-
-  return results;
 }
 
 // GET /api/routine - Supports optional query filters: ?section=5B&faculty=SDS&day=Saturday
@@ -123,7 +61,15 @@ router.get('/', async (req, res) => {
   try {
     const filter = {};
     if (req.query.section) {
-      filter.section = req.query.section.trim().toUpperCase();
+      const sec = req.query.section.trim().toUpperCase();
+      if (!sec.includes('-')) {
+        // Base section like "5B" matches "5B", "5B - I", and "5B - II"
+        filter.section = { $regex: new RegExp(`^${escapeRegex(sec)}(\\s*-\\s*(I|II))?$`, 'i') };
+      } else {
+        // Specific group like "5B - I" matches itself and shared theory "5B"
+        const base = sec.split('-')[0].trim();
+        filter.section = { $in: [sec, base] };
+      }
     }
     if (req.query.faculty) {
       filter.faculty = req.query.faculty.trim().toUpperCase();
@@ -162,12 +108,8 @@ router.get('/meta', async (req, res) => {
 });
 
 // POST /api/routine/upload-file - Upload and parse Excel (.xlsx, .xls, .csv) or PDF (.pdf)
-router.post('/upload-file', authenticateToken, upload.single('file'), async (req, res) => {
+router.post('/upload-file', authenticateToken, requireAdmin, upload.single('file'), async (req, res) => {
   try {
-    if (req.user.designation !== 'Admin' && req.user.designation !== 'Teacher') {
-      return res.status(403).json({ message: 'Access denied. Administrative role required.' });
-    }
-
     if (!req.file) {
       return res.status(400).json({ message: 'No file uploaded. Please provide an Excel or PDF file.' });
     }
@@ -175,10 +117,16 @@ router.post('/upload-file', authenticateToken, upload.single('file'), async (req
     const filename = req.file.originalname.toLowerCase();
     const mode = req.body.mode || 'replace'; // 'replace' or 'append'
     const dryRun = req.body.dryRun === 'true' || req.body.dryRun === true;
+
     let parsedEntries = [];
+    let parsedRoomDetails = {};
+    let facultyNames = {};
 
     if (filename.endsWith('.xlsx') || filename.endsWith('.xls') || filename.endsWith('.csv')) {
-      parsedEntries = parseRoutineFromExcel(req.file.buffer);
+      const parsed = parseRoutineFromExcel(req.file.buffer);
+      parsedEntries = parsed.entries;
+      parsedRoomDetails = parsed.roomDetails;
+      facultyNames = parsed.facultyNames;
     } else if (filename.endsWith('.pdf')) {
       const parser = new PDFParse({ data: req.file.buffer });
       const pdfText = await parser.getText();
@@ -191,41 +139,33 @@ router.post('/upload-file', authenticateToken, upload.single('file'), async (req
 
     if (parsedEntries.length === 0) {
       return res.status(422).json({
-        message: 'Could not extract valid routine entries. Please ensure columns include Day, Section, Time, Course, Faculty, and Room.'
+        message: 'Could not extract valid routine entries. Ensure your spreadsheet has a Routine matrix or Day, Section, Time, Course, Faculty, and Room columns.'
       });
     }
 
-    // If dryRun, return parsed preview without saving
     if (dryRun) {
       return res.status(200).json({
         message: `Parsed ${parsedEntries.length} routine entries from ${req.file.originalname}`,
         count: parsedEntries.length,
-        entries: parsedEntries
+        entries: parsedEntries,
+        roomDetails: parsedRoomDetails,
+        facultyNames
       });
     }
 
-    // Commit to database
     if (mode === 'replace') {
       await Routine.deleteMany({});
     }
 
     await Routine.insertMany(parsedEntries);
-
-    // Auto-discover any new rooms and add to RoomDetail
-    const uniqueRooms = [...new Set(parsedEntries.map(e => e.room))];
-    for (const r of uniqueRooms) {
-      await RoomDetail.findOneAndUpdate(
-        { room: r },
-        { $setOnInsert: { room: r, capacity: 40, ac: true, projector: true, lab: false } },
-        { upsert: true }
-      );
-    }
+    await upsertRoomDetailsMap(parsedRoomDetails, parsedEntries);
 
     res.status(200).json({
       message: `Routine updated successfully! ${parsedEntries.length} classes loaded (${mode === 'replace' ? 'Master schedule replaced' : 'Appended to schedule'}).`,
       count: parsedEntries.length,
       mode,
-      sample: parsedEntries.slice(0, 5)
+      sample: parsedEntries.slice(0, 5),
+      roomDetails: parsedRoomDetails
     });
   } catch (error) {
     res.status(500).json({ message: `Failed to process routine file: ${error.message}` });
@@ -233,13 +173,9 @@ router.post('/upload-file', authenticateToken, upload.single('file'), async (req
 });
 
 // POST /api/routine/batch-update - Direct batch save of routine items from preview
-router.post('/batch-update', authenticateToken, async (req, res) => {
+router.post('/batch-update', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    if (req.user.designation !== 'Admin' && req.user.designation !== 'Teacher') {
-      return res.status(403).json({ message: 'Access denied. Administrative role required.' });
-    }
-
-    const { routines, mode = 'replace' } = req.body;
+    const { routines, roomDetails, mode = 'replace' } = req.body;
     if (!Array.isArray(routines) || routines.length === 0) {
       return res.status(400).json({ message: 'Valid routine array required.' });
     }
@@ -249,16 +185,7 @@ router.post('/batch-update', authenticateToken, async (req, res) => {
     }
 
     await Routine.insertMany(routines);
-
-    // Auto-discover rooms
-    const uniqueRooms = [...new Set(routines.map(e => e.room))];
-    for (const r of uniqueRooms) {
-      await RoomDetail.findOneAndUpdate(
-        { room: r },
-        { $setOnInsert: { room: r, capacity: 40, ac: true, projector: true, lab: false } },
-        { upsert: true }
-      );
-    }
+    await upsertRoomDetailsMap(roomDetails, routines);
 
     res.status(200).json({
       message: `Batch update complete. ${routines.length} classes successfully registered.`,
@@ -269,35 +196,259 @@ router.post('/batch-update', authenticateToken, async (req, res) => {
   }
 });
 
-// POST /api/routine - Single routine entry addition
-router.post('/', optionalAuthenticateToken, async (req, res) => {
+async function checkRoutineConflicts({ day, time, section, faculty, room }) {
+  if (!/^(online|tba)$/i.test(room)) {
+    const roomConflict = await Routine.findOne({ day, time, room });
+    if (roomConflict) {
+      return `Room ${room} is already occupied by ${roomConflict.course} (Section ${roomConflict.section}) on ${day} at ${time}.`;
+    }
+  }
+
+  const sectionConflict = await Routine.findOne({ day, time, section });
+  if (sectionConflict) {
+    return `Section ${section} already has ${sectionConflict.course} scheduled on ${day} at ${time}.`;
+  }
+
+  if (!/^(tba|extra)$/i.test(faculty)) {
+    const facultyConflict = await Routine.findOne({ day, time, faculty });
+    if (facultyConflict) {
+      return `Faculty ${faculty} is already teaching ${facultyConflict.course} (Section ${facultyConflict.section}) on ${day} at ${time}.`;
+    }
+  }
+
+  return null;
+}
+
+// GET /api/routine/requests - Admin sees all requests; Teacher sees own requests
+router.get('/requests', authenticateToken, requireTeacher, async (req, res) => {
   try {
-    const { day, section, time, course, faculty, room, capacity, hasAC, hasProjector, isLab } = req.body;
+    const filter = req.user.designation === 'Admin' ? {} : { requestedBy: req.user.userId };
+    const requests = await RoutineRequest.find(filter).sort({ createdAt: -1 });
+    res.status(200).json({ requests });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error fetching routine requests.' });
+  }
+});
+
+// POST /api/routine/requests - Teacher submits a routine change for admin approval
+router.post('/requests', authenticateToken, requireTeacher, async (req, res) => {
+  try {
+    const { day, section, time, course, faculty, facultyName, room, capacity, hasAC, hasProjector, isLab, note } = req.body;
 
     if (!day || !section || !time || !course || !faculty || !room) {
       return res.status(400).json({ message: 'All routine fields are required.' });
     }
 
-    if (req.user && req.user.designation !== 'Teacher' && req.user.designation !== 'Admin') {
-      return res.status(403).json({ message: 'Teacher or Admin privileges required.' });
+    const cleanDay = day.trim();
+    const cleanSection = section.trim().toUpperCase();
+    const cleanTime = time.trim();
+    const cleanCourse = course.trim().toUpperCase();
+    const cleanFaculty = faculty.trim().toUpperCase();
+    const cleanRoom = room.trim();
+
+    const conflictMsg = await checkRoutineConflicts({
+      day: cleanDay,
+      time: cleanTime,
+      section: cleanSection,
+      faculty: cleanFaculty,
+      room: cleanRoom
+    });
+    if (conflictMsg) {
+      return res.status(409).json({ message: conflictMsg });
+    }
+
+    // Prevent duplicate pending request for same slot & room/section
+    const pendingDup = await RoutineRequest.findOne({
+      status: 'Pending',
+      day: cleanDay,
+      time: cleanTime,
+      $or: [
+        { section: cleanSection },
+        ...(!/^(online|tba)$/i.test(cleanRoom) ? [{ room: cleanRoom }] : [])
+      ]
+    });
+    if (pendingDup) {
+      return res.status(409).json({
+        message: `A pending request already exists for ${cleanDay} at ${cleanTime} (Section ${pendingDup.section}, Room ${pendingDup.room}).`
+      });
+    }
+
+    const newRequest = new RoutineRequest({
+      day: cleanDay,
+      section: cleanSection,
+      time: cleanTime,
+      course: cleanCourse,
+      faculty: cleanFaculty,
+      facultyName: facultyName ? facultyName.trim() : '',
+      room: cleanRoom,
+      capacity: capacity ? Number(capacity) : 40,
+      hasAC: hasAC !== undefined ? Boolean(hasAC) : true,
+      hasProjector: hasProjector !== undefined ? Boolean(hasProjector) : true,
+      isLab: Boolean(isLab),
+      note: note ? String(note).trim() : '',
+      requestedBy: req.user.userId,
+      requestedByName: req.user.name || req.user.userId,
+      status: 'Pending'
+    });
+
+    await newRequest.save();
+    res.status(201).json({
+      message: 'Routine change submitted for admin review.',
+      request: newRequest
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error submitting routine request.' });
+  }
+});
+
+// POST /api/routine/requests/:id/approve - Admin approves submission and adds to master routine
+router.post('/requests/:id/approve', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const requestDoc = await RoutineRequest.findById(req.params.id);
+    if (!requestDoc) {
+      return res.status(404).json({ message: 'Routine request not found.' });
+    }
+    if (requestDoc.status !== 'Pending') {
+      return res.status(400).json({ message: `This request has already been ${requestDoc.status.toLowerCase()}.` });
+    }
+
+    const conflictMsg = await checkRoutineConflicts({
+      day: requestDoc.day,
+      time: requestDoc.time,
+      section: requestDoc.section,
+      faculty: requestDoc.faculty,
+      room: requestDoc.room
+    });
+    if (conflictMsg) {
+      return res.status(409).json({ message: `Cannot approve due to schedule conflict: ${conflictMsg}` });
     }
 
     const newEntry = new Routine({
-      day: day.trim(),
-      section: section.trim().toUpperCase(),
-      time: time.trim(),
-      course: course.trim().toUpperCase(),
-      faculty: faculty.trim().toUpperCase(),
-      room: room.trim()
+      day: requestDoc.day,
+      section: requestDoc.section,
+      time: requestDoc.time,
+      course: requestDoc.course,
+      faculty: requestDoc.faculty,
+      facultyName: requestDoc.facultyName || '',
+      room: requestDoc.room,
+      isLab: Boolean(requestDoc.isLab)
     });
 
     await newEntry.save();
 
-    if (capacity !== undefined) {
-      await RoomDetail.findOneAndUpdate(
-        { room: room.trim() },
+    let updatedRoomDetails = null;
+    if (!/^(online|tba)$/i.test(requestDoc.room)) {
+      const roomDoc = await RoomDetail.findOneAndUpdate(
+        { room: requestDoc.room },
         {
-          room: room.trim(),
+          room: requestDoc.room,
+          capacity: Number(requestDoc.capacity) || 40,
+          ac: Boolean(requestDoc.hasAC),
+          projector: Boolean(requestDoc.hasProjector),
+          lab: Boolean(requestDoc.isLab)
+        },
+        { upsert: true, new: true }
+      );
+      updatedRoomDetails = {
+        room: roomDoc.room,
+        details: {
+          capacity: roomDoc.capacity,
+          ac: roomDoc.ac,
+          projector: roomDoc.projector,
+          lab: roomDoc.lab
+        }
+      };
+    }
+
+    requestDoc.status = 'Approved';
+    requestDoc.reviewedBy = req.user.userId;
+    requestDoc.reviewNote = req.body.reviewNote ? String(req.body.reviewNote).trim() : '';
+    requestDoc.reviewedAt = new Date();
+    await requestDoc.save();
+
+    res.status(200).json({
+      message: `Approved ${requestDoc.course} (${requestDoc.day} ${requestDoc.time}) and added to master routine.`,
+      request: requestDoc,
+      routineEntry: newEntry,
+      updatedRoomDetails
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error approving routine request.' });
+  }
+});
+
+// POST /api/routine/requests/:id/reject - Admin rejects submission
+router.post('/requests/:id/reject', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const requestDoc = await RoutineRequest.findById(req.params.id);
+    if (!requestDoc) {
+      return res.status(404).json({ message: 'Routine request not found.' });
+    }
+    if (requestDoc.status !== 'Pending') {
+      return res.status(400).json({ message: `This request has already been ${requestDoc.status.toLowerCase()}.` });
+    }
+
+    requestDoc.status = 'Rejected';
+    requestDoc.reviewedBy = req.user.userId;
+    requestDoc.reviewNote = req.body.reviewNote ? String(req.body.reviewNote).trim() : 'Rejected by administrator.';
+    requestDoc.reviewedAt = new Date();
+    await requestDoc.save();
+
+    res.status(200).json({
+      message: `Rejected routine request for ${requestDoc.course}.`,
+      request: requestDoc
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error rejecting routine request.' });
+  }
+});
+
+// POST /api/routine - Direct single routine entry addition (ONLY Admin)
+router.post('/', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { day, section, time, course, faculty, facultyName, room, capacity, hasAC, hasProjector, isLab } = req.body;
+
+    if (!day || !section || !time || !course || !faculty || !room) {
+      return res.status(400).json({ message: 'All routine fields are required.' });
+    }
+
+    const cleanDay = day.trim();
+    const cleanSection = section.trim().toUpperCase();
+    const cleanTime = time.trim();
+    const cleanCourse = course.trim().toUpperCase();
+    const cleanFaculty = faculty.trim().toUpperCase();
+    const cleanRoom = room.trim();
+
+    const conflictMsg = await checkRoutineConflicts({
+      day: cleanDay,
+      time: cleanTime,
+      section: cleanSection,
+      faculty: cleanFaculty,
+      room: cleanRoom
+    });
+    if (conflictMsg) {
+      return res.status(409).json({ message: conflictMsg });
+    }
+
+    const newEntry = new Routine({
+      day: cleanDay,
+      section: cleanSection,
+      time: cleanTime,
+      course: cleanCourse,
+      faculty: cleanFaculty,
+      facultyName: facultyName ? facultyName.trim() : '',
+      room: cleanRoom,
+      isLab: Boolean(isLab)
+    });
+
+    await newEntry.save();
+
+    let updatedRoomDetails = null;
+    if (capacity !== undefined && !/^(online|tba)$/i.test(cleanRoom)) {
+      const roomDoc = await RoomDetail.findOneAndUpdate(
+        { room: cleanRoom },
+        {
+          room: cleanRoom,
           capacity: Number(capacity) || 30,
           ac: Boolean(hasAC),
           projector: Boolean(hasProjector),
@@ -305,11 +456,30 @@ router.post('/', optionalAuthenticateToken, async (req, res) => {
         },
         { upsert: true, new: true }
       );
+      updatedRoomDetails = {
+        capacity: roomDoc.capacity,
+        ac: roomDoc.ac,
+        projector: roomDoc.projector,
+        lab: roomDoc.lab
+      };
     }
 
-    res.status(201).json({ routineEntry: newEntry });
+    res.status(201).json({ routineEntry: newEntry, roomDetails: updatedRoomDetails });
   } catch (error) {
     res.status(500).json({ message: 'Server error adding routine entry.' });
+  }
+});
+
+// DELETE /api/routine/:id - Remove a routine entry (ONLY Admin)
+router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const deleted = await Routine.findByIdAndDelete(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ message: 'Routine entry not found.' });
+    }
+    res.status(200).json({ message: 'Routine entry deleted.', id: req.params.id });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error deleting routine entry.' });
   }
 });
 

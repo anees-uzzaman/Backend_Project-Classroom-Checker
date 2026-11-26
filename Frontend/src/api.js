@@ -99,7 +99,11 @@ export const authAPI = {
   async getMe() {
     const token = getToken();
     if (!token) return null;
-    return await request('/auth/me', { method: 'GET' });
+    const data = await request('/auth/me', { method: 'GET' });
+    if (data && data.user) {
+      setSession(data.user, data.token || token);
+    }
+    return data;
   },
 
   async updateProfile(payload) {
@@ -159,6 +163,37 @@ export const routineAPI = {
     });
   },
 
+  async deleteRoutineEntry(entryId) {
+    return await request(`/routine/${encodeURIComponent(entryId)}`, {
+      method: 'DELETE'
+    });
+  },
+
+  async getRoutineRequests() {
+    return await request('/routine/requests', { method: 'GET' });
+  },
+
+  async submitRoutineRequest(payload) {
+    return await request('/routine/requests', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  async approveRoutineRequest(id, reviewNote = '') {
+    return await request(`/routine/requests/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ reviewNote })
+    });
+  },
+
+  async rejectRoutineRequest(id, reviewNote = '') {
+    return await request(`/routine/requests/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reviewNote })
+    });
+  },
+
   async uploadFile(file, { mode = 'replace', dryRun = false } = {}) {
     const formData = new FormData();
     formData.append('file', file);
@@ -170,10 +205,10 @@ export const routineAPI = {
     });
   },
 
-  async batchUpdate(routines, mode = 'replace') {
+  async batchUpdate(routines, mode = 'replace', roomDetails = null) {
     return await request('/routine/batch-update', {
       method: 'POST',
-      body: JSON.stringify({ routines, mode })
+      body: JSON.stringify({ routines, mode, ...(roomDetails ? { roomDetails } : {}) })
     });
   },
 
@@ -195,10 +230,14 @@ export const adminAPI = {
   },
 
   async assignRole({ targetUserId, newRole }) {
-    return await request('/admin/assign-role', {
+    const data = await request('/admin/assign-role', {
       method: 'POST',
       body: JSON.stringify({ targetUserId, newRole })
     });
+    if (data && data.token && data.user) {
+      setSession(data.user, data.token);
+    }
+    return data;
   },
 
   async bootstrapAdmin() {

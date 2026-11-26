@@ -108,7 +108,8 @@ router.get('/me', authenticateToken, async (req, res) => {
     }
 
     const userData = formatUserData(user);
-    res.status(200).json({ user: userData });
+    const token = createToken(user);
+    res.status(200).json({ user: userData, token });
   } catch (error) {
     res.status(500).json({ message: 'Server error fetching user profile.' });
   }
@@ -117,27 +118,52 @@ router.get('/me', authenticateToken, async (req, res) => {
 // PUT /api/auth/profile
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
-    const { name, designation, department, section, facultyCode } = req.body;
+    const { id, name, department, section, facultyCode } = req.body;
 
     const user = await User.findOne({ userId: req.user.userId });
     if (!user) {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    if (name) user.name = name.trim();
-    if (designation && ['Student', 'Teacher', 'Admin'].includes(designation)) {
-      user.designation = designation;
+    const previousUserId = user.userId;
+
+    // Only Teachers and Admins may change their ID
+    if (id !== undefined) {
+      const trimmedId = String(id).trim();
+      if (trimmedId !== previousUserId) {
+        if (user.designation !== 'Teacher' && user.designation !== 'Admin') {
+          return res.status(403).json({ message: 'Only Teachers and Admins can change their ID.' });
+        }
+        if (trimmedId.length < 2) {
+          return res.status(400).json({ message: 'ID must be at least 2 characters.' });
+        }
+        const existingUser = await User.findOne({ userId: trimmedId });
+        if (existingUser) {
+          return res.status(400).json({ message: 'An account with this ID already exists.' });
+        }
+        user.userId = trimmedId;
+      }
     }
-    if (department) user.department = department.trim();
-    if (section !== undefined) user.section = section.trim().toUpperCase();
-    if (facultyCode !== undefined) user.facultyCode = facultyCode.trim().toUpperCase();
+
+    if (name !== undefined && String(name).trim()) {
+      user.name = String(name).trim();
+    }
+    if (department !== undefined && String(department).trim()) {
+      user.department = String(department).trim();
+    }
+    if (section !== undefined) {
+      user.section = String(section).trim().toUpperCase();
+    }
+    if (facultyCode !== undefined) {
+      user.facultyCode = String(facultyCode).trim().toUpperCase();
+    }
 
     await user.save();
 
-    // Also update any bookings created by this user
+    // Also update any bookings created by this user (including migrated userId)
     await Booking.updateMany(
-      { user: user.userId },
-      { name: user.name, designation: user.designation }
+      { user: previousUserId },
+      { user: user.userId, name: user.name, designation: user.designation }
     );
 
     const userData = formatUserData(user);

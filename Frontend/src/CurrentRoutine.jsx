@@ -1,7 +1,11 @@
 import { useState, useMemo } from 'react';
 import { IconCalendar } from './icons';
+import { ACADEMIC_DAYS, matchesStudentSection, sortRoutineEntries } from './routineParser';
+import { routineAPI } from './api';
+import Toast from './Toast';
+import DayRoutineGrid from './DayRoutineGrid';
 
-export default function CurrentRoutine({ routine, user }) {
+export default function CurrentRoutine({ routine, setRoutine, user }) {
   const isTeacher = user && user.designation === 'Teacher';
   const isAdmin = user && user.designation === 'Admin';
   const isStudent = !isTeacher && !isAdmin;
@@ -11,37 +15,30 @@ export default function CurrentRoutine({ routine, user }) {
 
   const [selectedDay, setSelectedDay] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
+  const [toast, setToast] = useState(null);
 
-  const days = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
+  const days = ACADEMIC_DAYS;
 
-  const dayOrder = {
-    'saturday': 1,
-    'sunday': 2,
-    'monday': 3,
-    'tuesday': 4,
-    'wednesday': 5,
-    'thursday': 6,
-    'friday': 7
-  };
-
-  const parseTimeSlotStart = (timeStr) => {
-    const m = (timeStr || '').match(/(\d{1,2})[\.:](\d{2})\s*([AaPp][Mm])?/);
-    if (!m) return 0;
-    let hour = parseInt(m[1], 10);
-    const min = parseInt(m[2], 10);
-    const ampm = m[3] ? m[3].toUpperCase() : '';
-    if (ampm === 'PM' && hour < 12) hour += 12;
-    if (ampm === 'AM' && hour === 12) hour = 0;
-    return hour * 60 + min;
+  const handleDeleteEntry = async (entry) => {
+    if (!entry._id) return;
+    try {
+      await routineAPI.deleteRoutineEntry(entry._id);
+      if (setRoutine) {
+        setRoutine(prev => prev.filter(item => item._id !== entry._id));
+      }
+      setToast({ message: `Removed ${entry.course} (${entry.day} ${entry.time})`, type: 'success', id: Date.now() });
+    } catch (err) {
+      setToast({ message: err.message || 'Failed to delete entry', type: 'error', id: Date.now() });
+    }
   };
 
   // Strictly filter for student and teacher
   const filteredRoutine = useMemo(() => {
-    return routine.filter(item => {
+    const matched = routine.filter(item => {
       // 1. Role enforcement: Students only see their section, Teachers only see their classes
       if (isStudent) {
         if (!userSection) return false;
-        if (item.section.trim().toUpperCase() !== userSection) return false;
+        if (!matchesStudentSection(item.section, userSection)) return false;
       } else if (isTeacher) {
         if (!userFaculty) return false;
         if (item.faculty.trim().toUpperCase() !== userFaculty) return false;
@@ -56,35 +53,40 @@ export default function CurrentRoutine({ routine, user }) {
         item.section.toLowerCase().includes(q) ||
         item.course.toLowerCase().includes(q) ||
         item.faculty.toLowerCase().includes(q) ||
+        (item.facultyName && item.facultyName.toLowerCase().includes(q)) ||
         item.room.toLowerCase().includes(q);
 
       return matchesDay && matchesSearch;
-    }).sort((a, b) => {
-      const dayA = dayOrder[a.day.toLowerCase()] || 99;
-      const dayB = dayOrder[b.day.toLowerCase()] || 99;
-      if (dayA !== dayB) return dayA - dayB;
-      return parseTimeSlotStart(a.time) - parseTimeSlotStart(b.time);
     });
+
+    return sortRoutineEntries(matched);
   }, [routine, isStudent, isTeacher, userSection, userFaculty, selectedDay, searchQuery]);
 
   return (
     <div className="card-panel">
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
+      )}
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.5rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: isTeacher ? 'linear-gradient(135deg, #f59e0b, #d97706)' : 'linear-gradient(135deg, var(--primary), var(--accent))', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+          <div className={`icon-tile ${isTeacher ? 'icon-tile-warning' : ''}`} aria-hidden="true">
             <IconCalendar />
           </div>
           <div>
-            <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 800 }}>
+            <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700 }}>
               {isStudent && (userSection ? `Section ${userSection} Schedule` : 'Class Schedule')}
               {isTeacher && (userFaculty ? `Faculty ${userFaculty} Schedule` : 'Teaching Schedule')}
-              {isAdmin && 'Institution Master Routine'}
+              {isAdmin && 'Master Routine'}
             </h3>
-            <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-              {isStudent && userSection && `Showing complete timetable for Section ${userSection}`}
-              {isTeacher && userFaculty && `Showing assigned teaching schedule for Faculty ${userFaculty}`}
-              {isAdmin && 'Full schedule browser with search and day filtering'}
+            <p style={{ margin: '0.15rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+              {isStudent && userSection && `Complete timetable for Section ${userSection}`}
+              {isTeacher && userFaculty && `Assigned teaching schedule for ${userFaculty}`}
+              {isAdmin && 'Browse, filter, and manage routine entries'}
             </p>
           </div>
         </div>
@@ -92,12 +94,12 @@ export default function CurrentRoutine({ routine, user }) {
         {/* User Scope Chip */}
         <div>
           {isStudent && userSection && (
-            <span className="user-chip" style={{ background: 'var(--primary)', color: 'white', fontWeight: 700 }}>
+            <span className="user-chip badge-solid-primary">
               Section {userSection}
             </span>
           )}
           {isTeacher && userFaculty && (
-            <span className="user-chip" style={{ background: '#f59e0b', color: 'white', fontWeight: 700 }}>
+            <span className="user-chip badge-warning">
               Faculty {userFaculty}
             </span>
           )}
@@ -107,44 +109,28 @@ export default function CurrentRoutine({ routine, user }) {
       {/* Filter and Search Bar */}
       <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
         <div style={{ flex: '1 1 200px', minWidth: '180px' }}>
-          <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+          <label htmlFor="routine-search" style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
             Search Courses or Rooms
           </label>
           <input
+            id="routine-search"
             type="text"
-            placeholder="Search by course code, room, etc..."
+            className="styled-input"
+            placeholder="Course code, room, or section..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '0.65rem 0.9rem',
-              border: '1.5px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              background: 'var(--surface-soft)',
-              color: 'var(--text-main)',
-              fontSize: '0.9rem',
-              fontFamily: 'inherit'
-            }}
           />
         </div>
 
         <div style={{ flex: '1 1 180px', minWidth: '160px' }}>
-          <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+          <label htmlFor="routine-day-filter" style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
             Filter by Day
           </label>
           <select
+            id="routine-day-filter"
+            className="styled-input"
             value={selectedDay}
             onChange={(e) => setSelectedDay(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '0.65rem 0.9rem',
-              border: '1.5px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              background: 'var(--surface-soft)',
-              color: 'var(--text-main)',
-              fontSize: '0.9rem',
-              fontFamily: 'inherit'
-            }}
           >
             <option value="All">All Days</option>
             {days.map(day => (
@@ -172,7 +158,7 @@ export default function CurrentRoutine({ routine, user }) {
         </div>
       )}
 
-      {/* Whole routine in a single unified table */}
+      {/* Per-day horizontal routine for students/teachers; full management table for admins */}
       {((isStudent && userSection) || (isTeacher && userFaculty) || isAdmin) && (
         <>
           {filteredRoutine.length === 0 ? (
@@ -181,6 +167,14 @@ export default function CurrentRoutine({ routine, user }) {
               <h4>No classes found</h4>
               <p>No classes matched your filter criteria.</p>
             </div>
+          ) : !isAdmin ? (
+            <DayRoutineGrid
+              entries={filteredRoutine}
+              isTeacher={isTeacher}
+              isAdmin={false}
+              days={selectedDay === 'All' ? ACADEMIC_DAYS : [selectedDay]}
+              showOffDays={!searchQuery && selectedDay === 'All'}
+            />
           ) : (
             <div className="routine-table-wrapper">
               <table className="routine-table">
@@ -189,8 +183,10 @@ export default function CurrentRoutine({ routine, user }) {
                     <th style={{ width: '130px' }}>Day</th>
                     <th style={{ width: '190px' }}>Time Slot</th>
                     <th>Course</th>
-                    {isTeacher ? <th>Section</th> : <th>Faculty</th>}
+                    {(isTeacher || isAdmin) && <th>Section</th>}
+                    {!isTeacher && <th>Faculty</th>}
                     <th>Room</th>
+                    {isAdmin && <th style={{ textAlign: 'right' }}>Action</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -200,40 +196,68 @@ export default function CurrentRoutine({ routine, user }) {
 
                     return (
                       <tr
-                        key={idx}
+                        key={entry._id || idx}
                         style={{
                           borderTop: isNewDay && idx > 0 ? '2px solid var(--border)' : undefined
                         }}
                       >
                         <td>
-                          <span className="routine-day-badge" style={{ display: 'inline-block', padding: '0.2rem 0.6rem', fontSize: '0.8rem', fontWeight: 700 }}>
+                          <span className="routine-day-badge">
                             {entry.day}
                           </span>
                         </td>
                         <td>
-                          <strong style={{ fontSize: '0.9rem', color: 'var(--text-main)' }}>{entry.time}</strong>
+                          <strong className="tabular-nums" style={{ fontSize: '0.88rem', color: 'var(--text-main)' }}>{entry.time}</strong>
                         </td>
                         <td>
-                          <code style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--primary)' }}>
+                          <code style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--primary-text)' }}>
                             {entry.course}
                           </code>
-                        </td>
-                        <td>
-                          {isTeacher ? (
-                            <span className="user-chip" style={{ background: 'var(--primary-soft)', color: 'var(--primary)', fontWeight: 700 }}>
-                              Section {entry.section}
-                            </span>
-                          ) : (
-                            <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
-                              {entry.faculty}
+                          {isStudent && entry.section && entry.section.includes('-') && (
+                            <span className="routine-slot-group" style={{ marginLeft: '0.45rem' }}>
+                              {entry.section.split('-')[1].trim() === 'I' ? 'Gr-I' : entry.section.split('-')[1].trim() === 'II' ? 'Gr-II' : entry.section}
                             </span>
                           )}
                         </td>
+                        {(isTeacher || isAdmin) && (
+                          <td>
+                            <span className="user-chip badge-primary">
+                              {entry.section}
+                            </span>
+                          </td>
+                        )}
+                        {!isTeacher && (
+                          <td>
+                            <div>
+                              <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
+                                {entry.faculty}
+                              </span>
+                              {entry.facultyName && (
+                                <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                  {entry.facultyName}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        )}
                         <td>
                           <span className="routine-room-badge" style={{ fontSize: '0.85rem' }}>
                             Room {entry.room}
                           </span>
                         </td>
+                        {isAdmin && (
+                          <td style={{ textAlign: 'right' }}>
+                            {entry._id && (
+                              <button
+                                type="button"
+                                className="cancel-btn small-btn"
+                                onClick={() => handleDeleteEntry(entry)}
+                              >
+                                Remove
+                              </button>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     );
                   })}

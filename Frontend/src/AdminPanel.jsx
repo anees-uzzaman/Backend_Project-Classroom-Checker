@@ -1,17 +1,24 @@
 import { useState, useEffect, useRef } from 'react';
-import * as xlsx from 'xlsx';
-import { IconShield, IconSearch, IconCheck, IconUpload, IconFileText, IconCalendar } from './icons';
+import { IconShield, IconSearch, IconCheck, IconUpload, IconCalendar, IconFileText } from './icons';
 import { adminAPI, routineAPI } from './api';
+import { parseRoutineWorkbook } from './routineParser';
 import Toast from './Toast';
 
 export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
-  const [activeTab, setActiveTab] = useState('routineReader'); // 'routineReader' | 'roles'
+  const [activeTab, setActiveTab] = useState('routineReader'); // 'routineReader' | 'approvals' | 'roles'
+
+  // Routine Approvals state
+  const [routineRequests, setRoutineRequests] = useState([]);
+  const [isLoadingRequests, setIsLoadingRequests] = useState(false);
+  const [processingRequestId, setProcessingRequestId] = useState(null);
+  const [reviewNotes, setReviewNotes] = useState({});
 
   // Routine Reader state
   const [selectedFile, setSelectedFile] = useState(null);
   const [isParsingFile, setIsParsingFile] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [parsedRoutine, setParsedRoutine] = useState([]);
+  const [parsedRoomDetails, setParsedRoomDetails] = useState(null);
   const [updateMode, setUpdateMode] = useState('replace'); // 'replace' | 'append'
   const [uploadSuccessMsg, setUploadSuccessMsg] = useState('');
   const [routinePreviewFilter, setRoutinePreviewFilter] = useState('');
@@ -46,44 +53,81 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
     }
   };
 
+  const fetchRoutineRequests = async () => {
+    if (!isAdmin) return;
+    setIsLoadingRequests(true);
+    try {
+      const data = await routineAPI.getRoutineRequests();
+      if (data && Array.isArray(data.requests)) {
+        setRoutineRequests(data.requests);
+      }
+    } catch (err) {
+      console.warn('Could not load routine requests:', err.message);
+    } finally {
+      setIsLoadingRequests(false);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
+    fetchRoutineRequests();
   }, [isAdmin]);
 
-  // Client-side helper: Normalize row from Excel
-  const normalizeRow = (row, defaultDay = 'Saturday') => {
-    const getField = (candidates) => {
-      for (const key of Object.keys(row)) {
-        const clean = key.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-        for (const c of candidates) {
-          if (clean === c.toLowerCase().replace(/[^a-z0-9]/g, '')) {
-            const v = String(row[key]).trim();
-            if (v) return v;
-          }
-        }
+  const handleApproveRequest = async (reqItem) => {
+    setProcessingRequestId(reqItem._id);
+    try {
+      const note = reviewNotes[reqItem._id] || '';
+      const res = await routineAPI.approveRoutineRequest(reqItem._id, note);
+      if (res && res.request) {
+        setRoutineRequests(prev => prev.map(r => r._id === reqItem._id ? res.request : r));
       }
-      return '';
-    };
-
-    const day = getField(['day', 'weekday', 'dayofweek']) || defaultDay;
-    const section = getField(['section', 'sec', 'batch']);
-    const time = getField(['time', 'timeslot', 'slot', 'period', 'hour']);
-    const course = getField(['course', 'coursecode', 'subject', 'class']);
-    const faculty = getField(['faculty', 'teacher', 'instructor', 'initials']) || 'TBA';
-    const room = getField(['room', 'roomno', 'classroom', 'hall']);
-
-    if (!section || !time || !course || !room) return null;
-
-    const cleanDay = day.charAt(0).toUpperCase() + day.slice(1).toLowerCase();
-    return {
-      day: cleanDay,
-      section: section.trim().toUpperCase(),
-      time: time.trim(),
-      course: course.trim().toUpperCase(),
-      faculty: faculty.trim().toUpperCase(),
-      room: room.trim()
-    };
+      if (res && res.routineEntry && onRoutineUpdated) {
+        const roomUpdate = res.updatedRoomDetails
+          ? { [res.updatedRoomDetails.room]: res.updatedRoomDetails.details }
+          : null;
+        onRoutineUpdated([res.routineEntry], 'append', roomUpdate);
+      }
+      setToast({
+        message: res.message || `Approved ${reqItem.course} and added to master routine.`,
+        type: 'success',
+        id: Date.now()
+      });
+    } catch (err) {
+      setToast({
+        message: err.message || 'Failed to approve routine request.',
+        type: 'error',
+        id: Date.now()
+      });
+    } finally {
+      setProcessingRequestId(null);
+    }
   };
+
+  const handleRejectRequest = async (reqItem) => {
+    setProcessingRequestId(reqItem._id);
+    try {
+      const note = reviewNotes[reqItem._id] || '';
+      const res = await routineAPI.rejectRoutineRequest(reqItem._id, note);
+      if (res && res.request) {
+        setRoutineRequests(prev => prev.map(r => r._id === reqItem._id ? res.request : r));
+      }
+      setToast({
+        message: res.message || `Rejected request for ${reqItem.course}.`,
+        type: 'info',
+        id: Date.now()
+      });
+    } catch (err) {
+      setToast({
+        message: err.message || 'Failed to reject routine request.',
+        type: 'error',
+        id: Date.now()
+      });
+    } finally {
+      setProcessingRequestId(null);
+    }
+  };
+
+  const pendingCount = routineRequests.filter(r => r.status === 'Pending').length;
 
   // Handle file selection (Excel or PDF)
   const handleFileChange = async (e) => {
@@ -98,29 +142,17 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
     const filename = file.name.toLowerCase();
 
     if (filename.endsWith('.xlsx') || filename.endsWith('.xls') || filename.endsWith('.csv')) {
-      // Parse Excel client-side with SheetJS for instant interactive preview
       try {
         const buffer = await file.arrayBuffer();
-        const workbook = xlsx.read(buffer, { type: 'array' });
-        const entries = [];
-
-        for (const sheetName of workbook.SheetNames) {
-          const sheet = workbook.Sheets[sheetName];
-          const rawRows = xlsx.utils.sheet_to_json(sheet, { defval: '' });
-          const dayMatch = sheetName.match(/^(Saturday|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday)/i);
-          const defaultDay = dayMatch ? dayMatch[1].charAt(0).toUpperCase() + dayMatch[1].slice(1).toLowerCase() : 'Saturday';
-
-          for (const r of rawRows) {
-            const normalized = normalizeRow(r, defaultDay);
-            if (normalized) entries.push(normalized);
-          }
-        }
+        const { entries, roomDetails } = parseRoutineWorkbook(buffer);
 
         if (entries.length === 0) {
-          setError('No valid routine entries found in this spreadsheet. Check column headers (Day, Section, Time, Course, Faculty, Room).');
+          setError('No valid routine entries found in this spreadsheet. Ensure it has a Routine matrix or Day, Section, Time, Course, Faculty, and Room columns.');
           setParsedRoutine([]);
+          setParsedRoomDetails(null);
         } else {
           setParsedRoutine(entries);
+          setParsedRoomDetails(roomDetails);
           setToast({
             message: `Extracted ${entries.length} classes from ${file.name}`,
             type: 'info',
@@ -130,15 +162,16 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
       } catch (err) {
         setError(`Failed to parse spreadsheet: ${err.message}`);
         setParsedRoutine([]);
+        setParsedRoomDetails(null);
       } finally {
         setIsParsingFile(false);
       }
     } else if (filename.endsWith('.pdf')) {
-      // Send PDF to backend routine reader service for parsing
       try {
         const res = await routineAPI.uploadFile(file, { mode: updateMode, dryRun: true });
         if (res && res.entries && res.entries.length > 0) {
           setParsedRoutine(res.entries);
+          setParsedRoomDetails(res.roomDetails || null);
           setToast({
             message: `Extracted ${res.entries.length} classes from PDF`,
             type: 'info',
@@ -147,10 +180,12 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
         } else {
           setError('Could not extract tabular routine from PDF. Ensure text content contains Day, Section, Time, and Course.');
           setParsedRoutine([]);
+          setParsedRoomDetails(null);
         }
       } catch (err) {
         setError(`Failed to parse PDF routine: ${err.message}`);
         setParsedRoutine([]);
+        setParsedRoomDetails(null);
       } finally {
         setIsParsingFile(false);
       }
@@ -158,6 +193,7 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
       setError('Please select an Excel (.xlsx, .xls, .csv) or PDF (.pdf) file.');
       setSelectedFile(null);
       setParsedRoutine([]);
+      setParsedRoomDetails(null);
       setIsParsingFile(false);
     }
   };
@@ -173,7 +209,7 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
     setError('');
 
     try {
-      const res = await routineAPI.batchUpdate(parsedRoutine, updateMode);
+      await routineAPI.batchUpdate(parsedRoutine, updateMode, parsedRoomDetails);
       setUploadSuccessMsg(
         `Schedule successfully updated! ${parsedRoutine.length} classes saved to database (${updateMode === 'replace' ? 'Master schedule replaced' : 'Appended to schedule'}).`
       );
@@ -183,14 +219,13 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
         id: Date.now()
       });
 
-      // Notify parent to refresh app routine state
       if (onRoutineUpdated) {
-        onRoutineUpdated(parsedRoutine, updateMode);
+        onRoutineUpdated(parsedRoutine, updateMode, parsedRoomDetails);
       }
 
-      // Reset file input
       setSelectedFile(null);
       setParsedRoutine([]);
+      setParsedRoomDetails(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (err) {
       setError(err.message || 'Failed to update schedule in database.');
@@ -219,14 +254,14 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
         id: Date.now()
       });
 
-      // Reload fresh routines
       const routineRes = await routineAPI.getRoutines();
       if (routineRes && routineRes.routine && onRoutineUpdated) {
-        onRoutineUpdated(routineRes.routine, 'replace');
+        onRoutineUpdated(routineRes.routine, 'replace', res.roomDetails || null);
       }
 
       setSelectedFile(null);
       setParsedRoutine([]);
+      setParsedRoomDetails(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (err) {
       setError(err.message || 'Failed to upload and update schedule.');
@@ -343,13 +378,13 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
             onClose={() => setToast(null)}
           />
         )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.75rem' }}>
-          <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: 'linear-gradient(135deg, #ef4444, #dc2626)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', marginBottom: '1.5rem' }}>
+          <div className="icon-tile icon-tile-danger" aria-hidden="true">
             <IconShield />
           </div>
           <div>
             <h3 style={{ margin: 0 }}>Administrator Access Required</h3>
-            <p style={{ margin: '0.25rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+            <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
               This section is restricted to administrators only.
             </p>
           </div>
@@ -385,34 +420,189 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
         />
       )}
 
-      {/* Tabs */}
-      <div className="tabs">
+      {/* Segmented Tabs */}
+      <div className="tabs" role="tablist" aria-label="Admin sections">
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'routineReader'}
           className={activeTab === 'routineReader' ? 'active' : ''}
           onClick={() => setActiveTab('routineReader')}
         >
-          <span className="tab-icon"><IconUpload /></span> Full Routine Reader (Excel / PDF)
+          <span className="tab-icon" aria-hidden="true"><IconUpload /></span> Full Routine Reader
         </button>
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'approvals'}
+          className={activeTab === 'approvals' ? 'active' : ''}
+          onClick={() => setActiveTab('approvals')}
+        >
+          <span className="tab-icon" aria-hidden="true"><IconCalendar /></span> Routine Approvals
+          {pendingCount > 0 && (
+            <span className="tab-count-badge" aria-label={`${pendingCount} pending`}>
+              {pendingCount}
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'roles'}
           className={activeTab === 'roles' ? 'active' : ''}
           onClick={() => setActiveTab('roles')}
         >
-          <span className="tab-icon"><IconShield /></span> Role Assignment & Directory
+          <span className="tab-icon" aria-hidden="true"><IconShield /></span> Role Assignment
         </button>
       </div>
 
-      {activeTab === 'routineReader' ? (
+      {activeTab === 'approvals' ? (
+        <div className="card-panel">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+              <div className="icon-tile icon-tile-warning" aria-hidden="true">
+                <IconCalendar />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700 }}>Teacher Routine Submissions</h3>
+                <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Review and approve or reject routine updates submitted by teachers.
+                </p>
+              </div>
+            </div>
+            <button type="button" className="secondary-btn small-btn" onClick={fetchRoutineRequests} disabled={isLoadingRequests}>
+              {isLoadingRequests ? 'Refreshing...' : 'Refresh'}
+            </button>
+          </div>
+
+          {isLoadingRequests ? (
+            <div style={{ padding: '2rem', textAlign: 'center' }}><div className="spinner"></div></div>
+          ) : routineRequests.length === 0 ? (
+            <div className="empty-state" style={{ padding: '2.5rem' }}>
+              <div className="empty-state-icon"><IconCalendar /></div>
+              <h4>No routine submissions</h4>
+              <p>Teacher routine review submissions will appear here for your approval.</p>
+            </div>
+          ) : (
+            <div className="routine-table-wrapper">
+              <table className="routine-table">
+                <thead>
+                  <tr>
+                    <th>Submitted By</th>
+                    <th>Day & Time</th>
+                    <th>Section</th>
+                    <th>Course & Faculty</th>
+                    <th>Room</th>
+                    <th>Status</th>
+                    <th>Review Note / Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {routineRequests.map(req => {
+                    const isPending = req.status === 'Pending';
+                    const isBusy = processingRequestId === req._id;
+                    return (
+                      <tr key={req._id}>
+                        <td>
+                          <strong>{req.requestedByName || req.requestedBy}</strong>
+                          <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)' }}>ID: {req.requestedBy}</span>
+                          {req.note && (
+                            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem', fontStyle: 'italic' }}>
+                              &ldquo;{req.note}&rdquo;
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          <strong>{req.day}</strong>
+                          <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>{req.time}</span>
+                        </td>
+                        <td>
+                          <span className="user-chip badge-primary">
+                            {req.section}
+                          </span>
+                        </td>
+                        <td>
+                          <code>{req.course}</code>
+                          <span style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }}>Faculty: {req.faculty}</span>
+                        </td>
+                        <td>
+                          <span className="routine-room-badge">{req.room}</span>
+                          <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                            Cap: {req.capacity || 40}{req.isLab ? ' • Lab' : ''}
+                          </span>
+                        </td>
+                        <td>
+                          <span
+                            className={`user-chip ${
+                              req.status === 'Approved'
+                                ? 'badge-success'
+                                : req.status === 'Rejected'
+                                ? 'badge-danger'
+                                : 'badge-warning'
+                            }`}
+                          >
+                            {req.status}
+                          </span>
+                        </td>
+                        <td>
+                          {isPending ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', minWidth: '185px' }}>
+                              <input
+                                type="text"
+                                className="styled-input"
+                                placeholder="Optional review note..."
+                                value={reviewNotes[req._id] || ''}
+                                onChange={(e) => setReviewNotes(prev => ({ ...prev, [req._id]: e.target.value }))}
+                                disabled={isBusy}
+                                style={{ minHeight: '36px', padding: '0.35rem 0.6rem', fontSize: '0.8rem' }}
+                              />
+                              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                <button
+                                  type="button"
+                                  className="primary-btn small-btn"
+                                  disabled={isBusy}
+                                  onClick={() => handleApproveRequest(req)}
+                                  style={{ flex: 1, justifyContent: 'center', fontSize: '0.78rem', padding: '0.35rem 0.5rem' }}
+                                >
+                                  {isBusy ? '...' : 'Approve'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="cancel-btn small-btn"
+                                  disabled={isBusy}
+                                  onClick={() => handleRejectRequest(req)}
+                                  style={{ flex: 1, justifyContent: 'center', fontSize: '0.78rem', padding: '0.35rem 0.5rem' }}
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              {req.reviewNote || (req.reviewedBy ? `Reviewed by ${req.reviewedBy}` : '—')}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : activeTab === 'routineReader' ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
           {/* File Upload Zone */}
           <div className="card-panel">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
-              <div style={{ width: '44px', height: '44px', borderRadius: '12px', background: 'linear-gradient(135deg, var(--primary), var(--accent))', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', flexShrink: 0, boxShadow: 'var(--shadow-sm)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', marginBottom: '1.5rem' }}>
+              <div className="icon-tile" aria-hidden="true">
                 <IconUpload />
               </div>
               <div>
-                <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800 }}>Full Routine Reader</h3>
-                <p style={{ margin: '0.25rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                  Upload Excel (.xlsx, .xls, .csv) or PDF schedule files to read and update the institutional routine.
+                <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700 }}>Full Routine Reader</h3>
+                <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Upload Excel (.xlsx, .xls, .csv) or PDF schedule files to update the master routine.
                 </p>
               </div>
             </div>
@@ -425,34 +615,34 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
 
             {uploadSuccessMsg && (
               <div
+                className="badge-success"
                 style={{
-                  marginBottom: '1.5rem',
-                  padding: '1rem 1.25rem',
+                  marginBottom: '1.25rem',
+                  padding: '0.9rem 1.15rem',
                   borderRadius: 'var(--radius-md)',
-                  background: 'var(--success-soft)',
-                  border: '1.5px solid var(--success)',
+                  border: '1px solid var(--success-border)',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '0.75rem'
                 }}
               >
-                <span style={{ color: 'var(--success)', display: 'flex' }}><IconCheck /></span>
-                <span style={{ fontSize: '0.9rem', color: 'var(--text-main)', fontWeight: 600 }}>{uploadSuccessMsg}</span>
+                <span style={{ display: 'flex' }}><IconCheck /></span>
+                <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>{uploadSuccessMsg}</span>
               </div>
             )}
 
             {/* Drop / Selector Card */}
             <div
-              style={{
-                border: '2px dashed var(--border)',
-                borderRadius: 'var(--radius-lg)',
-                padding: '2.5rem 1.5rem',
-                textAlign: 'center',
-                background: 'var(--surface-soft)',
-                transition: 'border-color 0.2s',
-                cursor: 'pointer'
-              }}
+              role="button"
+              tabIndex={0}
+              className="admin-dropzone"
               onClick={() => fileInputRef.current && fileInputRef.current.click()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  fileInputRef.current && fileInputRef.current.click();
+                }
+              }}
             >
               <input
                 ref={fileInputRef}
@@ -461,14 +651,16 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
                 style={{ display: 'none' }}
                 onChange={handleFileChange}
               />
-              <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>📄</div>
-              <h4 style={{ margin: '0 0 0.5rem', fontSize: '1.1rem', color: 'var(--text-main)' }}>
+              <div className="icon-tile" style={{ margin: '0 auto 0.85rem', width: '48px', height: '48px' }} aria-hidden="true">
+                <IconFileText />
+              </div>
+              <h4 style={{ margin: '0 0 0.4rem', fontSize: '1.05rem', color: 'var(--text-main)' }}>
                 {selectedFile ? selectedFile.name : 'Choose an Excel or PDF Routine File'}
               </h4>
               <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                 {selectedFile
                   ? `Size: ${(selectedFile.size / 1024).toFixed(1)} KB • Click to change file`
-                  : 'Drag & drop or click to browse (.xlsx, .xls, .csv, .pdf)'}
+                  : 'Click to browse (.xlsx, .xls, .csv, .pdf)'}
               </p>
             </div>
 
@@ -541,21 +733,21 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
             <div className="card-panel">
               {/* Summary Metrics */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-                <div style={{ padding: '1rem', background: 'var(--surface-soft)', borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                <div style={{ padding: '1rem', background: 'var(--surface-soft)', borderRadius: 'var(--radius-md)', textAlign: 'center', border: '1px solid var(--border)' }}>
                   <p style={{ margin: '0 0 0.25rem', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>Total Classes</p>
-                  <h3 style={{ margin: 0, fontSize: '1.5rem', color: 'var(--primary)', fontWeight: 800 }}>{parsedRoutine.length}</h3>
+                  <h3 className="tabular-nums" style={{ margin: 0, fontSize: '1.5rem', color: 'var(--primary-text)', fontWeight: 700 }}>{parsedRoutine.length}</h3>
                 </div>
-                <div style={{ padding: '1rem', background: 'var(--surface-soft)', borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                <div style={{ padding: '1rem', background: 'var(--surface-soft)', borderRadius: 'var(--radius-md)', textAlign: 'center', border: '1px solid var(--border)' }}>
                   <p style={{ margin: '0 0 0.25rem', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>Unique Sections</p>
-                  <h3 style={{ margin: 0, fontSize: '1.5rem', color: 'var(--accent)', fontWeight: 800 }}>{uniqueSectionsCount}</h3>
+                  <h3 className="tabular-nums" style={{ margin: 0, fontSize: '1.5rem', color: 'var(--accent)', fontWeight: 700 }}>{uniqueSectionsCount}</h3>
                 </div>
-                <div style={{ padding: '1rem', background: 'var(--surface-soft)', borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                <div style={{ padding: '1rem', background: 'var(--surface-soft)', borderRadius: 'var(--radius-md)', textAlign: 'center', border: '1px solid var(--border)' }}>
                   <p style={{ margin: '0 0 0.25rem', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>Faculty Members</p>
-                  <h3 style={{ margin: 0, fontSize: '1.5rem', color: '#f59e0b', fontWeight: 800 }}>{uniqueFacultiesCount}</h3>
+                  <h3 className="tabular-nums" style={{ margin: 0, fontSize: '1.5rem', color: 'var(--warning-text)', fontWeight: 700 }}>{uniqueFacultiesCount}</h3>
                 </div>
-                <div style={{ padding: '1rem', background: 'var(--surface-soft)', borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                <div style={{ padding: '1rem', background: 'var(--surface-soft)', borderRadius: 'var(--radius-md)', textAlign: 'center', border: '1px solid var(--border)' }}>
                   <p style={{ margin: '0 0 0.25rem', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>Classrooms</p>
-                  <h3 style={{ margin: 0, fontSize: '1.5rem', color: '#10b981', fontWeight: 800 }}>{uniqueRoomsCount}</h3>
+                  <h3 className="tabular-nums" style={{ margin: 0, fontSize: '1.5rem', color: 'var(--success)', fontWeight: 700 }}>{uniqueRoomsCount}</h3>
                 </div>
               </div>
 
@@ -572,10 +764,11 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
                 <div style={{ minWidth: '220px', maxWidth: '300px', width: '100%' }}>
                   <input
                     type="text"
+                    className="styled-input"
                     placeholder="Filter preview by section, course, room..."
                     value={routinePreviewFilter}
                     onChange={(e) => setRoutinePreviewFilter(e.target.value)}
-                    style={{ width: '100%', fontSize: '0.85rem' }}
+                    style={{ fontSize: '0.85rem' }}
                   />
                 </div>
               </div>
@@ -596,10 +789,13 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
                     {filteredParsedRoutine.slice(0, 100).map((r, idx) => (
                       <tr key={idx}>
                         <td><strong>{r.day}</strong></td>
-                        <td><span className="user-chip" style={{ background: 'var(--primary-soft)', color: 'var(--primary)', fontWeight: 700 }}>{r.section}</span></td>
-                        <td>{r.time}</td>
+                        <td><span className="user-chip badge-primary">{r.section}</span></td>
+                        <td className="tabular-nums">{r.time}</td>
                         <td><code>{r.course}</code></td>
-                        <td>{r.faculty}</td>
+                        <td>
+                          <strong>{r.faculty}</strong>
+                          {r.facultyName ? <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)' }}>{r.facultyName}</span> : null}
+                        </td>
                         <td><span className="routine-room-badge">{r.room}</span></td>
                       </tr>
                     ))}
@@ -619,13 +815,13 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
           {/* Role Assignment Card */}
           <div className="card-panel">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.75rem' }}>
-              <div style={{ width: '44px', height: '44px', borderRadius: '12px', background: 'linear-gradient(135deg, var(--primary), var(--accent))', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', flexShrink: 0, boxShadow: 'var(--shadow-sm)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', marginBottom: '1.5rem' }}>
+              <div className="icon-tile" aria-hidden="true">
                 <IconShield />
               </div>
               <div>
-                <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800 }}>Admin-Controlled Role Assignment</h3>
-                <p style={{ margin: '0.25rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700 }}>Role Assignment</h3>
+                <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                   Authorize and reassign user permissions across the institution.
                 </p>
               </div>
@@ -640,11 +836,12 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
             <form onSubmit={handleRoleAssignment} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem', alignItems: 'end' }}>
               <div className="form-group" style={{ margin: 0 }}>
                 <label htmlFor="targetUserId" style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 600, fontSize: '0.85rem' }}>
-                  Target User ID <span style={{ color: 'var(--danger)' }}>*</span>
+                  Target User ID <span style={{ color: 'var(--danger-text)' }}>*</span>
                 </label>
                 <input
                   id="targetUserId"
                   type="text"
+                  className="styled-input"
                   placeholder="e.g. 242061009"
                   value={targetUserId}
                   onChange={(e) => {
@@ -653,20 +850,19 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
                   }}
                   required
                   disabled={isLoading}
-                  style={{ width: '100%' }}
                 />
               </div>
 
               <div className="form-group" style={{ margin: 0 }}>
                 <label htmlFor="newRole" style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 600, fontSize: '0.85rem' }}>
-                  New Assigned Role <span style={{ color: 'var(--danger)' }}>*</span>
+                  New Assigned Role <span style={{ color: 'var(--danger-text)' }}>*</span>
                 </label>
                 <select
                   id="newRole"
+                  className="styled-input"
                   value={newRole}
                   onChange={(e) => setNewRole(e.target.value)}
                   disabled={isLoading}
-                  style={{ width: '100%' }}
                 >
                   <option value="Student">Student (Section schedule & booking)</option>
                   <option value="Teacher">Teacher (Assigned classes & routine updates)</option>
@@ -734,12 +930,13 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
                 <div style={{ position: 'relative' }}>
                   <input
                     type="text"
+                    className="styled-input"
                     placeholder="Search user ID, name, section..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    style={{ width: '100%', paddingLeft: '2.25rem', fontSize: '0.85rem' }}
+                    style={{ paddingLeft: '2.25rem', fontSize: '0.85rem' }}
                   />
-                  <div style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }}>
+                  <div style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none', display: 'flex' }}>
                     <IconSearch />
                   </div>
                 </div>
@@ -779,6 +976,7 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
                           }}
                           onClick={() => {
                             setTargetUserId(u.id);
+                            if (u.designation) setNewRole(u.designation);
                             setError('');
                           }}
                         >
@@ -787,31 +985,22 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
                           <td>{u.department}</td>
                           <td>
                             {u.designation === 'Student' && u.section ? (
-                              <span className="user-chip" style={{ background: 'var(--primary-soft)', color: 'var(--primary)', fontWeight: 600 }}>Sec: {u.section}</span>
+                              <span className="user-chip badge-primary">Sec: {u.section}</span>
                             ) : u.designation === 'Teacher' && u.facultyCode ? (
-                              <span className="user-chip" style={{ background: 'var(--warning-soft)', color: '#b45309', fontWeight: 600 }}>Code: {u.facultyCode}</span>
+                              <span className="user-chip badge-warning">Code: {u.facultyCode}</span>
                             ) : (
                               <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>—</span>
                             )}
                           </td>
                           <td>
                             <span
-                              className="user-chip"
-                              style={{
-                                background:
-                                  u.designation === 'Admin'
-                                    ? 'linear-gradient(135deg, var(--accent), var(--primary))'
-                                    : u.designation === 'Teacher'
-                                    ? 'var(--warning-soft)'
-                                    : 'var(--surface-soft)',
-                                color:
-                                  u.designation === 'Admin'
-                                    ? 'white'
-                                    : u.designation === 'Teacher'
-                                    ? '#b45309'
-                                    : 'var(--text-main)',
-                                fontWeight: 600
-                              }}
+                              className={`user-chip ${
+                                u.designation === 'Admin'
+                                  ? 'badge-solid-primary'
+                                  : u.designation === 'Teacher'
+                                  ? 'badge-warning'
+                                  : 'badge-neutral'
+                              }`}
                             >
                               {u.designation}
                             </span>
@@ -823,6 +1012,7 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setTargetUserId(u.id);
+                                if (u.designation) setNewRole(u.designation);
                                 setError('');
                               }}
                             >

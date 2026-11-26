@@ -78,6 +78,8 @@ async function handleRoleAssignment(req, res) {
       { designation: normalizedRole }
     );
 
+    const isSelf = req.user && req.user.userId === targetUser.userId;
+
     res.status(200).json({
       message: `Role updated confirmation: User ${targetUser.name} (${targetUser.userId}) role changed from ${previousRole} to ${normalizedRole}.`,
       confirmation: {
@@ -94,8 +96,11 @@ async function handleRoleAssignment(req, res) {
         username: targetUser.userId,
         name: targetUser.name,
         designation: targetUser.designation,
-        department: targetUser.department
-      }
+        department: targetUser.department,
+        section: targetUser.section || '',
+        facultyCode: targetUser.facultyCode || ''
+      },
+      ...(isSelf ? { token: createToken(targetUser) } : {})
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error updating user role.' });
