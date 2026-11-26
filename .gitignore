@@ -1,0 +1,7 @@
+.aider*
+.DS_Store
+.vscode/
+node_modules/
+dist/
+*.log
+.env

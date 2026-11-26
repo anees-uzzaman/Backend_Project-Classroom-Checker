@@ -1,0 +1,6 @@
+.automate
+node_modules/
+.env
+.kilo
+
+.adstar
