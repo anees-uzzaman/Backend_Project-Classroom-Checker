@@ -1,5 +1,10 @@
 const mongoose = require("mongoose");
 
+let cached = global.__mongooseCache;
+if (!cached) {
+  cached = global.__mongooseCache = { conn: null, promise: null };
+}
+
 function getMongoUri() {
   const configuredUri = process.env.MONGODB_URI;
   const username = process.env.MONGODB_USERNAME;
@@ -25,12 +30,28 @@ function getMongoUri() {
 }
 
 async function connectDatabase() {
-  const mongoUri = getMongoUri();
+  if (cached.conn && mongoose.connection.readyState === 1) {
+    return cached.conn;
+  }
 
-  await mongoose.connect(mongoUri, {
-    dbName: "Room_Checker_v2", // Your new database name
-  });
-  console.log("MongoDB connected successfully");
+  if (!cached.promise) {
+    const mongoUri = getMongoUri();
+    cached.promise = mongoose
+      .connect(mongoUri, {
+        dbName: "Room_Checker_v2",
+      })
+      .then((mongooseInstance) => {
+        console.log("MongoDB connected successfully");
+        return mongooseInstance;
+      })
+      .catch((err) => {
+        cached.promise = null;
+        throw err;
+      });
+  }
+
+  cached.conn = await cached.promise;
+  return cached.conn;
 }
 
-module.exports = connectDatabase; // Export as a default function
+module.exports = connectDatabase;
