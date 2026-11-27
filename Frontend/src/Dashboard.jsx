@@ -318,7 +318,7 @@ export default function Dashboard({
                 )}
                 {/* Admin Selectors */}
                 {isAdmin && (
-                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
                     <select
                       className="styled-input"
                       aria-label="Schedule filter mode"
@@ -364,14 +364,14 @@ export default function Dashboard({
                 <p style={{ margin: '0 0 1rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                   Enter your assigned section (e.g. <strong>5B</strong> or <strong>6A</strong>) to load your routine:
                 </p>
-                <form onSubmit={handleSaveSection} style={{ display: 'flex', gap: '0.75rem', maxWidth: '360px' }}>
+                <form onSubmit={handleSaveSection} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', maxWidth: '360px' }}>
                   <input
                     type="text"
                     className="styled-input"
                     placeholder="e.g. 5B"
                     value={inputSection}
                     onChange={(e) => setInputSection(e.target.value.toUpperCase())}
-                    style={{ flex: 1, textTransform: 'uppercase', fontWeight: 700 }}
+                    style={{ flex: '1 1 160px', textTransform: 'uppercase', fontWeight: 700 }}
                     required
                   />
                   <button type="submit" className="primary-btn small-btn" disabled={isSavingPref}>
@@ -390,14 +390,14 @@ export default function Dashboard({
                 <p style={{ margin: '0 0 1rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                   Enter your teacher code / initials (e.g. <strong>SDS</strong> or <strong>ABM</strong>) to view your assigned classes:
                 </p>
-                <form onSubmit={handleSaveFaculty} style={{ display: 'flex', gap: '0.75rem', maxWidth: '360px' }}>
+                <form onSubmit={handleSaveFaculty} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', maxWidth: '360px' }}>
                   <input
                     type="text"
                     className="styled-input"
                     placeholder="e.g. SDS"
                     value={inputFaculty}
                     onChange={(e) => setInputFaculty(e.target.value.toUpperCase())}
-                    style={{ flex: 1, textTransform: 'uppercase', fontWeight: 700 }}
+                    style={{ flex: '1 1 160px', textTransform: 'uppercase', fontWeight: 700 }}
                     required
                   />
                   <button type="submit" className="primary-btn small-btn" disabled={isSavingPref}>

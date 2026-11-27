@@ -643,7 +643,7 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
 
             {/* Import Controls */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem 1.25rem' }}>
                 <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-secondary)' }}>Update Mode:</span>
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer' }}>
                   <input
@@ -810,7 +810,7 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
               </div>
             )}
 
-            <form onSubmit={handleRoleAssignment} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem', alignItems: 'end' }}>
+            <form onSubmit={handleRoleAssignment} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: '1.25rem', alignItems: 'end' }}>
               <div className="form-group" style={{ margin: 0 }}>
                 <label htmlFor="targetUserId" style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 600, fontSize: '0.85rem' }}>
                   Target User ID <span style={{ color: 'var(--danger-text)' }}>*</span>

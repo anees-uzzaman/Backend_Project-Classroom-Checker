@@ -56,7 +56,7 @@ export default function DayRoutineGrid({
                     {allocatedSlots.map((slot) => {
                       const slotClasses = dayEntries.filter((e) => e.time === slot);
                       return (
-                        <td key={slot} className="routine-slot-cell">
+                        <td key={slot} className="routine-slot-cell" data-slot={slot}>
                           <div className="routine-slot-stack">
                             {slotClasses.map((cls, idx) => {
                               const hasGroup = !isTeacher && cls.section && cls.section.includes('-');
