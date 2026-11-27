@@ -1,11 +1,10 @@
 const express = require('express');
 const multer = require('multer');
-const { PDFParse } = require('pdf-parse');
 const Routine = require('../../models/Routine');
 const RoutineRequest = require('../../models/RoutineRequest');
 const RoomDetail = require('../../models/RoomDetail');
 const { authenticateToken, requireTeacher, requireAdmin } = require('../middleware/auth');
-const { parseRoutineFromExcel, parseRoutineFromText } = require('../utils/routineParser');
+const { parseRoutineFromExcel } = require('../utils/routineParser');
 
 const router = express.Router();
 const upload = multer({
@@ -111,7 +110,7 @@ router.get('/meta', async (req, res) => {
 router.post('/upload-file', authenticateToken, requireAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded. Please provide an Excel or PDF file.' });
+      return res.status(400).json({ message: 'No file uploaded. Please provide an Excel (.xlsx, .xls, .csv) file.' });
     }
 
     const filename = req.file.originalname.toLowerCase();
@@ -127,13 +126,9 @@ router.post('/upload-file', authenticateToken, requireAdmin, upload.single('file
       parsedEntries = parsed.entries;
       parsedRoomDetails = parsed.roomDetails;
       facultyNames = parsed.facultyNames;
-    } else if (filename.endsWith('.pdf')) {
-      const parser = new PDFParse({ data: req.file.buffer });
-      const pdfText = await parser.getText();
-      parsedEntries = parseRoutineFromText(pdfText.text || '');
     } else {
       return res.status(400).json({
-        message: 'Unsupported file format. Please upload an Excel (.xlsx, .xls, .csv) or PDF (.pdf) file.'
+        message: 'Unsupported file format. Please upload an Excel (.xlsx, .xls, .csv) file.'
       });
     }
 
@@ -534,4 +529,4 @@ router.post('/seed', async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = (req, res, next) => router(req, res, next);

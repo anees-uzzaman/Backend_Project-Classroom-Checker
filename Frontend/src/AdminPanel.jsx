@@ -166,31 +166,8 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
       } finally {
         setIsParsingFile(false);
       }
-    } else if (filename.endsWith('.pdf')) {
-      try {
-        const res = await routineAPI.uploadFile(file, { mode: updateMode, dryRun: true });
-        if (res && res.entries && res.entries.length > 0) {
-          setParsedRoutine(res.entries);
-          setParsedRoomDetails(res.roomDetails || null);
-          setToast({
-            message: `Extracted ${res.entries.length} classes from PDF`,
-            type: 'info',
-            id: Date.now()
-          });
-        } else {
-          setError('Could not extract tabular routine from PDF. Ensure text content contains Day, Section, Time, and Course.');
-          setParsedRoutine([]);
-          setParsedRoomDetails(null);
-        }
-      } catch (err) {
-        setError(`Failed to parse PDF routine: ${err.message}`);
-        setParsedRoutine([]);
-        setParsedRoomDetails(null);
-      } finally {
-        setIsParsingFile(false);
-      }
     } else {
-      setError('Please select an Excel (.xlsx, .xls, .csv) or PDF (.pdf) file.');
+      setError('Please select an Excel (.xlsx, .xls, .csv) file.');
       setSelectedFile(null);
       setParsedRoutine([]);
       setParsedRoomDetails(null);
@@ -602,7 +579,7 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
               <div>
                 <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700 }}>Full Routine Reader</h3>
                 <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                  Upload Excel (.xlsx, .xls, .csv) or PDF schedule files to update the master routine.
+                  Upload Excel (.xlsx, .xls, .csv) schedule files to update the master routine.
                 </p>
               </div>
             </div>
@@ -647,7 +624,7 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".xlsx,.xls,.csv,.pdf"
+                accept=".xlsx,.xls,.csv"
                 style={{ display: 'none' }}
                 onChange={handleFileChange}
               />
@@ -655,12 +632,12 @@ export default function AdminPanel({ user, setUser, onRoutineUpdated }) {
                 <IconFileText />
               </div>
               <h4 style={{ margin: '0 0 0.4rem', fontSize: '1.05rem', color: 'var(--text-main)' }}>
-                {selectedFile ? selectedFile.name : 'Choose an Excel or PDF Routine File'}
+                {selectedFile ? selectedFile.name : 'Choose an Excel Routine File'}
               </h4>
               <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                 {selectedFile
                   ? `Size: ${(selectedFile.size / 1024).toFixed(1)} KB • Click to change file`
-                  : 'Click to browse (.xlsx, .xls, .csv, .pdf)'}
+                  : 'Click to browse (.xlsx, .xls, .csv)'}
               </p>
             </div>
 
